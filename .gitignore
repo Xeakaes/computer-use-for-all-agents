@@ -17,8 +17,10 @@ __pycache__/
 # Test/debug artifacts
 _*.json
 _*.py
+_frames/
 *.jpg
 *.png
+!docs/images/*.png
 d1.json
 f.jpg
 f2.jpg

@@ -12,6 +12,15 @@
 > **live** and send **mouse/keyboard commands** to it. Everything runs on your
 > own machine — no data ever leaves it, no cloud middleman.
 
+<p align="center">
+  <img src="docs/images/demo-typing.gif" alt="An AI agent typing into Notepad through the screen-control API" width="820">
+</p>
+
+<p align="center">
+  <sub><i>Every keystroke and every screenshot in this GIF went through the API —
+  the agent never touched a physical keyboard.</i></sub>
+</p>
+
 ---
 
 ## Why Screen Control?
@@ -1069,6 +1078,7 @@ screen-control/
 ├── sdk/
 │   └── screen_control.py  # Python SDK client (pip-installable style)
 ├── index.html           # Bundled web UI (live view + control panels)
+├── docs/images/         # README assets (demo GIF captured by the API itself)
 ├── requirements.txt     # Python dependencies
 ├── start-server.bat     # One command: REST + MCP + cloud tunnel (Windows)
 ├── stop-server.bat      # Stop all three processes
