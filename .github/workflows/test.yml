@@ -21,23 +21,21 @@ jobs:
         with:
           python-version: "3.12"
           cache: "pip"
-          cache-dependency-path: screen-control/requirements.txt
 
       - name: Install dependencies
         run: pip install -r requirements.txt
-        working-directory: screen-control
 
       - name: Start server
         run: |
-          Start-Process -NoNewWindow -FilePath python -ArgumentList "server.py" -WorkingDirectory "screen-control"
-          # Wait for the server to be ready
+          Start-Process -NoNewWindow -FilePath python -ArgumentList "server.py"
+          # Wait for the server to be ready.
+          # /token is the only auth-free endpoint on localhost — /api/*
+          # requires the X-Auth-Token header, so probing it would 401
+          # forever and fail the wait loop.
           $timeout = 30
           $elapsed = 0
           while ($elapsed -lt $timeout) {
             try {
-              # /token is the only auth-free endpoint on localhost —
-              # /api/* requires the X-Auth-Token header, so probing it
-              # would 401 forever and fail the wait loop.
               $response = Invoke-WebRequest -Uri "http://127.0.0.1:8745/token" -TimeoutSec 2 -ErrorAction Stop
               if ($response.StatusCode -eq 200) { break }
             } catch { }
@@ -52,7 +50,6 @@ jobs:
 
       - name: Run security tests
         run: python test-security.py
-        working-directory: screen-control
         env:
           PYTHONIOENCODING: utf-8
 
