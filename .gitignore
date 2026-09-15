@@ -1,0 +1,34 @@
+# Auth token (regenerated on each server start)
+.token
+
+# Persistent API keys (security: never commit)
+.apikeys
+
+# Server logs
+*.log
+logs/
+logs/*.jsonl
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Test/debug artifacts
+_*.json
+_*.py
+*.jpg
+*.png
+d1.json
+f.jpg
+f2.jpg
+hotbar.png
+w.png
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+cloudflared.exe

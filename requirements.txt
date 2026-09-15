@@ -1,0 +1,19 @@
+# screen-control dependencies
+
+# Core (required)
+mss>=9.0                   # Fast cross-platform screen capture
+pyautogui>=0.9.54          # Mouse/keyboard control (fallback for SendInput)
+pyvda>=0.4                 # Windows virtual desktop management (Win+Tab desktops)
+flask>=3.0                 # Lightweight HTTP server for the API
+Pillow>=10.0               # Image processing (JPEG/PNG, resize, greyscale)
+
+# Optional: OCR (screen text reading)
+# Install if you need the agent to "read" on-screen text.
+# Large download (~200MB); everything else works without it.
+rapidocr-onnxruntime>=1.3.24
+
+# Optional: MCP (Model Context Protocol) server
+# Install ONLY if you use mcp_server.py to connect MCP-capable agents
+# (Claude Desktop, Claude Code, Cursor, cloud agents, ...).
+mcp>=2.0
+uvicorn>=0.23              # required for mcp_server.py --http (cloud agents)

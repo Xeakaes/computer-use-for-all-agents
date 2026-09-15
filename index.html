@@ -1,0 +1,1413 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screen Control</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #12121a;
+  --bg-tertiary: #1a1a25;
+  --bg-elevated: #22222e;
+  --border-subtle: rgba(255,255,255,0.06);
+  --border-default: rgba(255,255,255,0.1);
+  --border-strong: rgba(255,255,255,0.15);
+  --text-primary: #f0f0f5;
+  --text-secondary: #a0a0b0;
+  --text-muted: #606070;
+  --accent-blue: #3b82f6;
+  --accent-blue-hover: #2563eb;
+  --accent-green: #22c55e;
+  --accent-red: #ef4444;
+  --accent-yellow: #eab308;
+  --accent-purple: #a855f7;
+  --glass-bg: rgba(18,18,26,0.8);
+  --glass-border: rgba(255,255,255,0.08);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+/* Background gradient */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: 
+    radial-gradient(ellipse at 20% 20%, rgba(59,130,246,0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 80%, rgba(168,85,247,0.06) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Header */
+.header {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo-icon {
+  width: 32px;
+  height: 32px;
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+
+.logo-text {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-tertiary);
+  border-radius: 100px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-red);
+  transition: var(--transition);
+}
+
+.status-badge.online .status-dot {
+  background: var(--accent-green);
+  box-shadow: 0 0 8px rgba(34,197,94,0.5);
+}
+
+.status-badge.online {
+  color: var(--accent-green);
+}
+
+.header-spacer { flex: 1; }
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.refresh-select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.refresh-select select {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.refresh-select select:hover {
+  border-color: var(--accent-blue);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition);
+  white-space: nowrap;
+}
+
+.btn-primary {
+  background: var(--accent-blue);
+  color: white;
+}
+
+.btn-primary:hover {
+  background: var(--accent-blue-hover);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+.btn-secondary {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+}
+
+.btn-secondary:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border-strong);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.btn-icon {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none !important;
+}
+
+/* Mode Banner */
+.mode-banner {
+  position: relative;
+  z-index: 10;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: linear-gradient(90deg, rgba(59,130,246,0.15), rgba(168,85,247,0.1));
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+
+.mode-banner.active {
+  display: flex;
+}
+
+.mode-banner b {
+  color: var(--accent-blue);
+}
+
+/* Main Layout */
+.main {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+  height: calc(100vh - 60px);
+}
+
+.main.has-banner {
+  height: calc(100vh - 100px);
+}
+
+/* Screen Area */
+.screen-container {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+}
+
+.screen-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.screen-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.screen-coords {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.screen-wrapper {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  overflow: hidden;
+}
+
+#screen {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  cursor: crosshair;
+  transition: opacity 0.2s;
+}
+
+#crosshair {
+  position: absolute;
+  pointer-events: none;
+  border: 2px solid var(--accent-blue);
+  background: rgba(59,130,246,0.1);
+  display: none;
+  border-radius: 2px;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 340px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.sidebar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 4px;
+}
+
+.sidebar::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+/* Panel Cards */
+.panel {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  transition: var(--transition);
+}
+
+.panel:hover {
+  border-color: var(--border-default);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.panel-title-icon {
+  font-size: 14px;
+}
+
+.panel-body {
+  padding: 14px 16px;
+}
+
+.panel-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 10px;
+  line-height: 1.5;
+}
+
+.panel-hint b {
+  color: var(--accent-red);
+}
+
+/* Form Elements */
+.input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.input-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.input-select {
+  width: 100%;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.input-select:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.2);
+}
+
+.input-textarea {
+  width: 100%;
+  min-height: 80px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  transition: var(--transition);
+}
+
+.input-textarea:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.2);
+}
+
+.input-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+/* Button Grid */
+.btn-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.btn-grid .btn {
+  flex: 0 0 auto;
+}
+
+.btn-sm {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.btn-xs {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+/* OCR Output */
+.ocr-output {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--accent-green);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  min-height: 60px;
+  max-height: 180px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ocr-output:empty::before {
+  content: '—';
+  color: var(--text-muted);
+}
+
+/* Window List */
+.window-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.window-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.window-item:last-child {
+  border-bottom: none;
+}
+
+.window-icon {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.window-item.focused .window-icon {
+  background: var(--accent-green);
+  box-shadow: 0 0 6px rgba(34,197,94,0.5);
+}
+
+.window-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.window-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.window-process {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.window-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* Game Mode */
+.game-pad {
+  position: relative;
+  height: 120px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+  overflow: hidden;
+}
+
+.game-pad-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.game-pad-indicator {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(59,130,246,0.3);
+  border: 2px solid var(--accent-blue);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.game-pad.active .game-pad-indicator {
+  opacity: 1;
+}
+
+.sensitivity-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sensitivity-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-blue);
+  min-width: 24px;
+  text-align: center;
+}
+
+.sensitivity-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  height: 4px;
+  background: var(--bg-tertiary);
+  border-radius: 2px;
+  outline: none;
+}
+
+.sensitivity-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  background: var(--accent-blue);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.sensitivity-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+  box-shadow: 0 0 8px rgba(59,130,246,0.5);
+}
+
+/* Emergency Stop */
+.emergency-panel {
+  background: linear-gradient(135deg, rgba(239,68,68,0.1), rgba(239,68,68,0.05));
+  border: 1px solid rgba(239,68,68,0.2);
+}
+
+.emergency-panel .panel-title {
+  color: var(--accent-red);
+}
+
+/* Drag Mode Toggle */
+.toggle-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.toggle {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  background: var(--bg-tertiary);
+  border-radius: 11px;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.toggle.active {
+  background: var(--accent-blue);
+}
+
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  background: white;
+  border-radius: 50%;
+  transition: var(--transition);
+}
+
+.toggle.active::after {
+  transform: translateX(18px);
+}
+
+.toggle-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Animations */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.loading {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+  .main {
+    flex-direction: column;
+  }
+  
+  .sidebar {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    overflow-y: visible;
+  }
+  
+  .panel {
+    flex: 1;
+    min-width: 280px;
+  }
+}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="logo">
+    <div class="logo-icon">🖥️</div>
+    <span class="logo-text">Screen Control</span>
+  </div>
+  
+  <div class="status-badge" id="status">
+    <span class="status-dot"></span>
+    <span id="status-text">bağlanıyor…</span>
+  </div>
+  
+  <div class="header-spacer"></div>
+  
+  <div class="header-controls">
+    <div class="refresh-select">
+      <span>Yenileme:</span>
+      <select id="fps">
+        <option value="100">Hızlı (100ms)</option>
+        <option value="250" selected>Normal (250ms)</option>
+        <option value="500">Yavaş (500ms)</option>
+      </select>
+    </div>
+    <button class="btn btn-secondary btn-icon" id="ocr-top" title="OCR Oku">👁️</button>
+  </div>
+</header>
+
+<div class="mode-banner" id="mode-banner"></div>
+
+<div class="main" id="main-layout">
+  <div class="screen-container">
+    <div class="screen-header">
+      <div class="screen-info">
+        <span id="screen-status">Canlı Görüntü</span>
+        <span class="screen-coords" id="coords">x: — , y: —</span>
+      </div>
+      <span id="screen-resolution"></span>
+    </div>
+    <div class="screen-wrapper" id="wrap">
+      <img id="screen" alt="Canlı görüntü">
+      <div id="crosshair"></div>
+    </div>
+  </div>
+
+  <aside class="sidebar">
+    <!-- Target Mode Panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="panel-title-icon">🎯</span>
+          <span>Hedef Modu</span>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="input-group">
+          <label class="input-label">Hedef Pencere</label>
+          <select class="input-select" id="target-sel">
+            <option value="">— tüm ekran (doğrudan mod) —</option>
+          </select>
+        </div>
+        <div class="btn-grid" style="margin-top: 10px;">
+          <button class="btn btn-secondary btn-sm" id="target-refresh">↻ Yenile</button>
+          <button class="btn btn-ghost btn-sm" id="target-clear">✕ Doğrudan Mod</button>
+        </div>
+        <div class="panel-hint" id="target-stats">
+          Doğrudan mod: tüm ekran görüntülenir, girdiler gerçek (SendInput) olarak gider.
+        </div>
+      </div>
+    </div>
+
+    <!-- Mouse Panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="panel-title-icon">🖱️</span>
+          <span>Fare Kontrolü</span>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="btn-grid">
+          <button class="btn btn-secondary btn-sm" data-act="click" data-button="left">Sol Tık</button>
+          <button class="btn btn-secondary btn-sm" data-act="click" data-button="right">Sağ Tık</button>
+          <button class="btn btn-secondary btn-sm" data-act="dbl">Çift Tık</button>
+          <button class="btn btn-secondary btn-sm" data-act="scroll" data-clicks="3">⬆ Kaydır</button>
+          <button class="btn btn-secondary btn-sm" data-act="scroll" data-clicks="-3">⬇ Kaydır</button>
+        </div>
+        <div class="toggle-group" style="margin-top: 12px;">
+          <div class="toggle" id="dragmode"></div>
+          <span class="toggle-label">Sürükleme Modu</span>
+        </div>
+        <div class="panel-hint">
+          Görüntü üzerinde tıklayarak veya kaydırarak kontrol edin.
+        </div>
+      </div>
+    </div>
+
+    <!-- Keyboard Panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="panel-title-icon">⌨️</span>
+          <span>Klavye</span>
+        </div>
+      </div>
+      <div class="panel-body">
+        <textarea class="input-textarea" id="type-area" placeholder="Yazılacak metin… (Türkçe karakterler dahil)"></textarea>
+        <div class="btn-grid" style="margin-top: 10px;">
+          <button class="btn btn-primary btn-sm" id="type-btn">Yazdır</button>
+          <button class="btn btn-secondary btn-sm" id="type-enter">Yazdır + Enter</button>
+        </div>
+        
+        <div style="margin-top: 16px;">
+          <div class="input-label" style="margin-bottom: 8px;">Hızlı Tuşlar</div>
+          <div class="btn-grid">
+            <button class="btn btn-secondary btn-xs" data-act="press" data-key="enter">Enter</button>
+            <button class="btn btn-secondary btn-xs" data-act="press" data-key="tab">Tab</button>
+            <button class="btn btn-secondary btn-xs" data-act="press" data-key="esc">Esc</button>
+            <button class="btn btn-secondary btn-xs" data-act="press" data-key="space">Boşluk</button>
+            <button class="btn btn-secondary btn-xs" data-act="press" data-key="backspace">⌫</button>
+            <button class="btn btn-secondary btn-xs" data-act="press" data-key="delete">Del</button>
+            <button class="btn btn-secondary btn-xs" data-act="press" data-key="up">↑</button>
+            <button class="btn btn-secondary btn-xs" data-act="press" data-key="down">↓</button>
+            <button class="btn btn-secondary btn-xs" data-act="press" data-key="left">←</button>
+            <button class="btn btn-secondary btn-xs" data-act="press" data-key="right">→</button>
+          </div>
+        </div>
+
+        <div style="margin-top: 16px;">
+          <div class="input-label" style="margin-bottom: 8px;">
+            Kısayollar
+            <span id="os-key-note" style="display:none; color:var(--text-muted); font-weight:400;"> (doğrudan mod)</span>
+          </div>
+          <div class="btn-grid" id="os-keys">
+            <button class="btn btn-secondary btn-xs" data-act="hotkey" data-keys="ctrl,c">Ctrl+C</button>
+            <button class="btn btn-secondary btn-xs" data-act="hotkey" data-keys="ctrl,v">Ctrl+V</button>
+            <button class="btn btn-secondary btn-xs" data-act="hotkey" data-keys="ctrl,x">Ctrl+X</button>
+            <button class="btn btn-secondary btn-xs" data-act="hotkey" data-keys="ctrl,a">Ctrl+A</button>
+            <button class="btn btn-secondary btn-xs" data-act="hotkey" data-keys="ctrl,z">Ctrl+Z</button>
+            <button class="btn btn-secondary btn-xs" data-act="hotkey" data-keys="ctrl,y">Ctrl+Y</button>
+            <button class="btn btn-secondary btn-xs" data-act="hotkey" data-keys="alt,tab">Alt+Tab</button>
+            <button class="btn btn-secondary btn-xs" data-act="hotkey" data-keys="ctrl,shift,esc">Görev Yönet.</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- OCR Panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="panel-title-icon">👁️</span>
+          <span>OCR (Metin Okuma)</span>
+        </div>
+      </div>
+      <div class="panel-body">
+        <button class="btn btn-primary" id="ocr-btn" style="width:100%">Ekran Metnini Oku</button>
+        <div class="ocr-output" id="ocr-out"></div>
+        <div class="panel-hint">
+          Ekran görüntüsündeki metinleri tanır ve koordinatlarıyla birlikte gösterir.
+        </div>
+      </div>
+    </div>
+
+    <!-- Windows Panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="panel-title-icon">🪟</span>
+          <span>Pencereler</span>
+        </div>
+        <button class="btn btn-ghost btn-xs" id="win-refresh">↻</button>
+      </div>
+      <div class="panel-body">
+        <div class="window-list" id="win-list"></div>
+      </div>
+    </div>
+
+    <!-- Game Mode Panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="panel-title-icon">🎮</span>
+          <span>Oyun Modu</span>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="sensitivity-control">
+          <span class="input-label">Hassasiyet:</span>
+          <input type="range" class="sensitivity-slider" id="sens" min="1" max="40" value="12">
+          <span class="sensitivity-value" id="sens-val">12</span>
+        </div>
+        <div class="btn-grid" style="margin-top: 12px;">
+          <button class="btn btn-primary btn-sm" id="game-start">▶ Başlat</button>
+          <button class="btn btn-secondary btn-sm" id="game-stop">■ Durdur</button>
+        </div>
+        <div class="game-pad" id="lookpad">
+          <div class="game-pad-label">Sürükle → Kamera Bakışı</div>
+          <div class="game-pad-indicator"></div>
+        </div>
+        <div class="btn-grid" style="margin-top: 10px;">
+          <button class="btn btn-secondary btn-xs" data-hold="w">W</button>
+          <button class="btn btn-secondary btn-xs" data-hold="a">A</button>
+          <button class="btn btn-secondary btn-xs" data-hold="s">S</button>
+          <button class="btn btn-secondary btn-xs" data-hold="d">D</button>
+          <button class="btn btn-secondary btn-xs" data-hold="space">Zıpla</button>
+          <button class="btn btn-secondary btn-xs" data-hold="shift">Eğil</button>
+          <button class="btn btn-secondary btn-xs" data-hold="e">E</button>
+        </div>
+        <div class="panel-hint">
+          Önce oyun penceresini odaklayın, sonra modu başlatın.
+        </div>
+      </div>
+    </div>
+
+    <!-- Emergency Panel -->
+    <div class="panel emergency-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span class="panel-title-icon">🛟</span>
+          <span>Acil Durdurma</span>
+        </div>
+      </div>
+      <div class="panel-body">
+        <button class="btn btn-primary" id="release-all" style="width:100%; background: var(--accent-red);">
+          ⚠️ Tüm Girdileri Serbest Bırak
+        </button>
+        <div class="panel-hint">
+          İmleci <b>sol üst köşeye</b> çekerek veya bu butonla tüm girdileri durdurun.
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const screenImg = $("screen");
+const statusEl = $("status"), statusText = $("status-text");
+
+const CTRL_HINTS = ["edit", "richedit", "textbox", "textinput"];
+
+let target = null;
+let typeChild = null;
+let targetDead = false;
+let screenW = 0, screenH = 0;
+
+// --- API with Retry ---
+let TOKEN = sessionStorage.getItem("sc_token") || "";
+const MAX_RETRIES = 2;
+const RETRY_DELAY = 500;
+
+async function ensureToken() {
+  if (TOKEN) return;
+  const j = await (await fetch("/token")).json();
+  TOKEN = j.token;
+  sessionStorage.setItem("sc_token", TOKEN);
+}
+
+async function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function api(url, opts, retryCount = 0) {
+  await ensureToken();
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers, { "X-Auth-Token": TOKEN });
+  
+  try {
+    const res = await fetch(url, opts);
+    if (!res.ok) {
+      let msg = res.status;
+      try { const j = await res.json(); msg = j.error || msg; } catch {}
+      
+      // Retry on network errors or 5xx errors
+      if ((res.status >= 500 || res.status === 0) && retryCount < MAX_RETRIES) {
+        await sleep(RETRY_DELAY * (retryCount + 1));
+        return api(url, opts, retryCount + 1);
+      }
+      throw new Error(msg);
+    }
+    return res;
+  } catch (err) {
+    // Retry on network errors
+    if (retryCount < MAX_RETRIES && (err.name === 'TypeError' || err.message.includes('network'))) {
+      await sleep(RETRY_DELAY * (retryCount + 1));
+      return api(url, opts, retryCount + 1);
+    }
+    throw err;
+  }
+}
+
+async function postJson(url, body) {
+  return api(url, { 
+    method: "POST", 
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body) 
+  });
+}
+
+function showErr(e) {
+  statusText.textContent = "Hata: " + e.message;
+  statusEl.classList.remove("online");
+}
+
+// --- Target Mode ---
+function setBanner() {
+  const b = $("mode-banner");
+  if (target) {
+    b.classList.add("active");
+    b.innerHTML = `🎯 <b>Hedef mod aktif:</b> hwnd ${target}` +
+      (typeChild ? ` · yazım kontrolü: ${typeChild}` : "") +
+      ` — girdiler bu pencereye yönlendirilir.`;
+  } else {
+    b.classList.remove("active");
+  }
+}
+
+async function setTarget(hwnd) {
+  target = hwnd ? +hwnd : null;
+  typeChild = null;
+  targetDead = false;
+  const stats = $("target-stats");
+  if (!target) {
+    stats.textContent = "Doğrudan mod: tüm ekran görüntülenir, girdiler gerçek (SendInput) olarak gider.";
+    setBanner();
+    applyModeUI();
+    return;
+  }
+  try {
+    const j = await (await api("/api/window/children?hwnd=" + target)).json();
+    const inputKids = (j.children || []).filter(c =>
+      CTRL_HINTS.some(h => c.class.toLowerCase().includes(h)));
+    typeChild = inputKids.length ? inputKids[0].hwnd : null;
+    stats.textContent = "Yazım: " +
+      (typeChild ? `alt kontrol ${typeChild}` : "üst pencere") + ".";
+  } catch (e) {
+    stats.textContent = "Hata: " + e.message;
+  }
+  setBanner();
+  applyModeUI();
+  $("target-sel").value = String(target);
+}
+
+function applyModeUI() {
+  document.querySelectorAll("#os-keys button").forEach(b => { b.disabled = !!target; });
+  $("os-key-note").style.display = target ? "inline" : "none";
+}
+
+// --- Window List ---
+async function refreshWindows() {
+  const list = $("win-list");
+  try {
+    const j = await (await api("/api/windows")).json();
+    const sel = $("target-sel");
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— tüm ekran (doğrudan mod) —</option>';
+    j.windows.forEach(w => {
+      const o = document.createElement("option");
+      o.value = w.hwnd;
+      o.textContent = `${w.focused ? "●" : "○"} ${w.title.slice(0, 35)} [${w.process}]`;
+      sel.appendChild(o);
+    });
+    sel.value = target ? String(target) : (cur || "");
+
+    list.innerHTML = "";
+    j.windows.slice(0, 30).forEach(w => {
+      const row = document.createElement("div");
+      row.className = "window-item" + (w.focused ? " focused" : "");
+      
+      row.innerHTML = `
+        <div class="window-icon"></div>
+        <div class="window-info">
+          <div class="window-title">${w.title.slice(0, 30)}</div>
+          <div class="window-process">${w.process}</div>
+        </div>
+        <div class="window-actions">
+          <button class="btn btn-ghost btn-xs" data-action="focus" data-hwnd="${w.hwnd}" title="Odakla">🎯</button>
+          <button class="btn btn-ghost btn-xs" data-action="close" data-hwnd="${w.hwnd}" data-title="${w.title.slice(0, 12)}" title="Kapat">✕</button>
+        </div>
+      `;
+      list.appendChild(row);
+    });
+    
+    list.querySelectorAll("[data-action]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const action = btn.dataset.action;
+        if (action === "focus") {
+          postJson("/api/window", { action: "focus", hwnd: +btn.dataset.hwnd }).catch(showErr);
+        } else if (action === "close") {
+          if (confirm("'" + btn.dataset.title + "' kapatılsın mı?")) {
+            postJson("/api/window", { 
+              action: "close", 
+              hwnd: +btn.dataset.hwnd, 
+              expect_title: btn.dataset.title 
+            }).then(refreshWindows).catch(showErr);
+          }
+        }
+      });
+    });
+    
+    if (!j.windows.length) list.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Pencere bulunamadı</div>';
+  } catch (e) {
+    list.innerHTML = '<div style="color:var(--accent-red);font-size:12px;">Hata: ' + e.message + '</div>';
+  }
+}
+
+// --- Live Stream ---
+let polling = false, pollTimer = null;
+
+function scheduleNext() { 
+  pollTimer = setTimeout(tick, parseInt($("fps").value, 10)); 
+}
+
+async function tick() {
+  if (polling) { scheduleNext(); return; }
+  polling = true;
+  const url = target
+    ? `/api/window/capture?hwnd=${target}&t=${Date.now()}`
+    : `/api/screenshot?t=${Date.now()}`;
+  try {
+    const res = await api(url);
+    const blob = await res.blob();
+    screenImg.src = URL.createObjectURL(blob);
+    if (targetDead) { targetDead = false; }
+    statusEl.classList.add("online");
+    statusText.textContent = target ? "Canlı (hedef)" : "Canlı";
+  } catch (e) {
+    statusEl.classList.remove("online");
+    statusText.textContent = target
+      ? "Hedef görüntüsü alınamıyor"
+      : "Bağlantı hatası";
+  }
+  polling = false;
+  scheduleNext();
+}
+
+// --- Coordinate Mapping ---
+function mapPoint(clientX, clientY) {
+  const r = screenImg.getBoundingClientRect();
+  const ix = (clientX - r.left) / r.width * screenImg.naturalWidth;
+  const iy = (clientY - r.top) / r.height * screenImg.naturalHeight;
+  if (target) return { x: Math.round(ix), y: Math.round(iy) };
+  const rx = screenW / screenImg.naturalWidth;
+  const ry = screenH / screenImg.naturalHeight;
+  return { x: Math.round(ix * rx), y: Math.round(iy * ry) };
+}
+
+// --- Input Routing ---
+async function sendClick(x, y, button = "left", clicks = 1) {
+  if (target) {
+    const px = (x == null) ? (screenImg.naturalWidth / 2) | 0 : x;
+    const py = (y == null) ? (screenImg.naturalHeight / 2) | 0 : y;
+    return postJson("/api/window/post", { hwnd: target, action: "click", x: px, y: py, button, clicks });
+  }
+  return postJson("/api/mouse", { action: "click", x, y, button, clicks });
+}
+
+async function sendType(text) {
+  const dst = typeChild || target;
+  if (target && dst) return postJson("/api/window/post", { hwnd: dst, action: "type", text });
+  return postJson("/api/key", { action: "type", text });
+}
+
+async function sendKey(name, action = "press") {
+  if (target) return postJson("/api/window/post", { hwnd: target, action, key: name });
+  return postJson("/api/key", { action, key: name });
+}
+
+async function sendHotkey(keys) {
+  if (target) return postJson("/api/window/post", { hwnd: target, action: "hotkey", keys });
+  return postJson("/api/key", { action: "hotkey", keys });
+}
+
+async function sendScroll(clicks) {
+  if (target) return postJson("/api/window/post", { hwnd: target, action: "scroll", clicks });
+  return postJson("/api/mouse", { action: "scroll", clicks });
+}
+
+// --- Mouse Events on Screen ---
+let lastClick = 0;
+let dragging = false, dragStart = null;
+
+screenImg.addEventListener("click", (e) => {
+  if ($("dragmode").classList.contains("active")) return;
+  const now = Date.now();
+  if (now - lastClick < 260) return;
+  lastClick = now;
+  const p = mapPoint(e.clientX, e.clientY);
+  sendClick(p.x, p.y).catch(showErr);
+});
+
+screenImg.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const p = mapPoint(e.clientX, e.clientY);
+  sendClick(p.x, p.y, "right").catch(showErr);
+});
+
+screenImg.addEventListener("dblclick", (e) => {
+  if ($("dragmode").classList.contains("active")) return;
+  const p = mapPoint(e.clientX, e.clientY);
+  sendClick(p.x, p.y, "left", 2).catch(showErr);
+});
+
+screenImg.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const clicks = Math.sign(e.deltaY) * -1 * (Math.abs(e.deltaY) > 40 ? 3 : 1);
+  sendScroll(clicks).catch(showErr);
+}, { passive: false });
+
+screenImg.addEventListener("mousedown", (e) => {
+  if (e.button !== 0 || !$("dragmode").classList.contains("active")) return;
+  const r = screenImg.getBoundingClientRect();
+  dragStart = mapPoint(e.clientX, e.clientY);
+  dragging = true;
+  const ch = $("crosshair");
+  ch.style.left = (e.clientX - r.left) + "px";
+  ch.style.top = (e.clientY - r.top) + "px";
+  ch.style.width = "0px";
+  ch.style.height = "0px";
+  ch.style.display = "block";
+  e.preventDefault();
+});
+
+window.addEventListener("mousemove", (e) => {
+  const r = screenImg.getBoundingClientRect();
+  if (e.target === screenImg) {
+    const p = mapPoint(e.clientX, e.clientY);
+    $("coords").textContent = `x: ${p.x}, y: ${p.y}`;
+  }
+  if (dragging) {
+    const ch = $("crosshair");
+    const dx = e.clientX - r.left, dy = e.clientY - r.top;
+    ch.style.left = Math.min(dx, +ch.style.left.replace("px", "")) + "px";
+    ch.style.top = Math.min(dy, +ch.style.top.replace("px", "")) + "px";
+    ch.style.width = Math.abs(dx - (+ch.style.left.replace("px", ""))) + "px";
+    ch.style.height = Math.abs(dy - (+ch.style.top.replace("px", ""))) + "px";
+  }
+});
+
+screenImg.addEventListener("mouseup", (e) => {
+  if (!dragging || e.button !== 0) return;
+  dragging = false;
+  $("crosshair").style.display = "none";
+  const end = mapPoint(e.clientX, e.clientY);
+  if (target) {
+    postJson("/api/window/post", { hwnd: target, action: "drag",
+      x1: dragStart.x, y1: dragStart.y, x: end.x, y: end.y }).catch(showErr);
+  } else {
+    postJson("/api/mouse", { action: "drag",
+      x1: dragStart.x, y1: dragStart.y, x: end.x, y: end.y }).catch(showErr);
+  }
+});
+
+// --- Panel Buttons ---
+document.querySelectorAll("[data-act]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const act = btn.dataset.act;
+    if (act === "click") sendClick(null, null, btn.dataset.button).catch(showErr);
+    else if (act === "dbl") sendClick(null, null, "left", 2).catch(showErr);
+    else if (act === "scroll") sendScroll(parseInt(btn.dataset.clicks, 10)).catch(showErr);
+    else if (act === "press") sendKey(btn.dataset.key).catch(showErr);
+    else if (act === "hotkey") sendHotkey(btn.dataset.keys.split(",")).catch(showErr);
+  });
+});
+
+$("type-btn").addEventListener("click", () => {
+  const text = $("type-area").value;
+  if (!text) return;
+  sendType(text).then(() => { $("type-area").value = ""; }).catch(showErr);
+});
+
+$("type-enter").addEventListener("click", () => {
+  const text = $("type-area").value;
+  if (target) {
+    sendType(text ? text + "\n" : "\n").then(() => { $("type-area").value = ""; }).catch(showErr);
+    return;
+  }
+  if (text) sendType(text).catch(showErr);
+  setTimeout(() => sendKey("enter").catch(showErr), 200);
+});
+
+// --- OCR ---
+async function runOcr() {
+  const out = $("ocr-out");
+  out.textContent = "Okunuyor…";
+  try {
+    const res = target
+      ? await api(`/api/window/capture?hwnd=${target}&ocr=1&t=${Date.now()}`)
+      : await api("/api/ocr", { method: "POST" });
+    const j = await res.json();
+    if (target) {
+      out.textContent = (j.items && j.items.length)
+        ? j.items.map(i => `(${i.x},${i.y}) ${i.text}`).join("\n")
+        : "(pencerede metin bulunamadı)";
+    } else {
+      out.textContent = j.text || "(ekranda metin bulunamadı)";
+    }
+  } catch (e) {
+    out.textContent = "Hata: " + e.message;
+  }
+}
+
+$("ocr-btn").addEventListener("click", runOcr);
+$("ocr-top").addEventListener("click", runOcr);
+
+// --- Game Mode ---
+$("sens").addEventListener("input", () => { 
+  $("sens-val").textContent = $("sens").value; 
+});
+
+$("game-start").addEventListener("click", () =>
+  postJson("/api/game", { action: "start", sensitivity: +$("sens").value }).catch(showErr));
+  
+$("game-stop").addEventListener("click", () =>
+  postJson("/api/game", { action: "stop" }).catch(showErr));
+
+const pad = $("lookpad");
+let padActive = false, padX = 0, padY = 0, lastLook = 0;
+
+pad.addEventListener("pointerdown", (e) => {
+  padActive = true; 
+  padX = e.clientX; 
+  padY = e.clientY;
+  pad.classList.add("active");
+  pad.setPointerCapture(e.pointerId);
+  const indicator = pad.querySelector(".game-pad-indicator");
+  indicator.style.left = (e.offsetX) + "px";
+  indicator.style.top = (e.offsetY) + "px";
+  e.preventDefault();
+});
+
+pad.addEventListener("pointermove", (e) => {
+  if (!padActive) return;
+  const dx = e.clientX - padX, dy = e.clientY - padY;
+  padX = e.clientX; padY = e.clientY;
+  const now = Date.now();
+  if (!dx && !dy) return;
+  if (now - lastLook < 16) return;
+  lastLook = now;
+  const indicator = pad.querySelector(".game-pad-indicator");
+  indicator.style.left = (e.offsetX) + "px";
+  indicator.style.top = (e.offsetY) + "px";
+  postJson("/api/game", { action: "move", dx, dy, sensitivity: +$("sens").value }).catch(showErr);
+});
+
+["pointerup", "pointercancel"].forEach((ev) =>
+  pad.addEventListener(ev, () => { 
+    padActive = false; 
+    pad.classList.remove("active");
+  }));
+
+document.querySelectorAll("[data-hold]").forEach((btn) => {
+  const keyName = btn.dataset.hold;
+  const press = (e) => {
+    e.preventDefault();
+    postJson("/api/key", { action: "down", key: keyName }).catch(showErr);
+    btn.classList.add("btn-primary");
+    btn.classList.remove("btn-secondary");
+  };
+  const release = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    postJson("/api/key", { action: "up", key: keyName }).catch(showErr);
+    btn.classList.remove("btn-primary");
+    btn.classList.add("btn-secondary");
+  };
+  btn.addEventListener("pointerdown", press);
+  btn.addEventListener("pointerup", release);
+  btn.addEventListener("pointerleave", release);
+  window.addEventListener("blur", () => release());
+});
+
+// --- Drag Mode Toggle ---
+$("dragmode").addEventListener("click", function() {
+  this.classList.toggle("active");
+});
+
+// --- Emergency Release ---
+$("release-all").addEventListener("click", () => {
+  postJson("/api/release_all", {}).catch(showErr);
+});
+
+// --- Target Events ---
+$("target-sel").addEventListener("change", (e) => setTarget(e.target.value || null));
+$("target-refresh").addEventListener("click", refreshWindows);
+$("target-clear").addEventListener("click", () => setTarget(null));
+$("win-refresh").addEventListener("click", refreshWindows);
+
+// --- Init ---
+(async () => {
+  try {
+    await ensureToken();
+    const j = await (await api("/api/info")).json();
+    screenW = j.width; screenH = j.height;
+    $("screen-resolution").textContent = `${screenW}×${screenH}`;
+  } catch (e) {
+    statusEl.classList.remove("online");
+    statusText.textContent = "Sunucuya ulaşılamıyor";
+  }
+  refreshWindows();
+  setInterval(refreshWindows, 15000);
+  tick();
+})();
+</script>
+</body>
+</html>
