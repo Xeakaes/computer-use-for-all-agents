@@ -32,6 +32,28 @@ a clean, safety-gated HTTP/MCP interface:
 One process, zero configuration, works with any language that can speak HTTP —
 or natively through MCP in Claude Desktop, Cursor, VS Code and cloud agents.
 
+### Performance Is Agent-Bound
+
+Screen Control is the **perception and actuation layer** — the eyes and hands.
+The effective speed and capability of any agent using it are bounded by that
+agent itself and by the environment it runs in:
+
+- **Thinking speed** — one action per agent "turn": the perceive → plan →
+  act → verify loop lives in the agent, so model inference latency and
+  reasoning depth directly set the pace. The API itself adds only
+  milliseconds per call.
+- **Context capacity** — screen readings (OCR text, frames, diffs) consume
+  the agent's context window; a larger window means more situational
+  awareness before verification degrades.
+- **Runtime environment** — network latency, MCP/HTTP round-trip overhead,
+  tool-call limits and hosting constraints all stack on top of the loop.
+
+In practice this means: the same repo makes a fast reasoning model fast and
+capable, and makes a slow model slow — the toolchain is not the bottleneck.
+Real-time or action-heavy tasks need an agent with fast inference and tight
+tool-loop latency; slower agents should prefer deliberate, verification-heavy
+tasks.
+
 ---
 
 ## Table of Contents

@@ -27,11 +27,14 @@ jobs:
 
       - name: Start server
         run: |
-          Start-Process -NoNewWindow -FilePath python -ArgumentList "server.py"
-          # Wait for the server to be ready.
-          # /token is the only auth-free endpoint on localhost — /api/*
-          # requires the X-Auth-Token header, so probing it would 401
-          # forever and fail the wait loop.
+          # Start the server fully detached with output redirected to files.
+          # A child that inherits the step's stdout/stderr pipes is killed
+          # when the step ends and the pipes close (Windows runner behavior)
+          # — file redirection avoids that. /token is probed because it is
+          # the only auth-free endpoint (API paths require the token).
+          Start-Process -FilePath python -ArgumentList "server.py" `
+            -RedirectStandardOutput server-ci.log -RedirectStandardError server-ci.err.log `
+            -WindowStyle Hidden
           $timeout = 30
           $elapsed = 0
           while ($elapsed -lt $timeout) {
@@ -43,6 +46,7 @@ jobs:
             $elapsed++
           }
           if ($elapsed -ge $timeout) {
+            if (Test-Path server-ci.err.log) { Get-Content server-ci.err.log | Write-Host }
             Write-Error "Server failed to start within ${timeout}s"
             exit 1
           }

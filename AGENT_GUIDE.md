@@ -9,6 +9,7 @@
 ## Table of Contents
 
 - [Quick Start for Agents](#quick-start-for-agents)
+- [Performance Note](#performance-note)
 - [MCP Mode (Native Tool Calling)](#mcp-mode-native-tool-calling)
 - [Perceive-Act Loop](#perceive-act-loop)
 - [Choosing a Perception Mode](#choosing-a-perception-mode)
@@ -55,6 +56,24 @@ curl -X POST http://127.0.0.1:8745/api/mouse -H "X-Auth-Token: $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"action":"click","x":500,"y":300}'
 ```
+
+---
+
+## Performance Note
+
+The API adds only milliseconds per call — **you** are the bottleneck. Your
+effective speed and capability are bounded by your own inference latency,
+reasoning depth, context window and runtime environment (network round-trips,
+tool-call limits). Choose tasks accordingly:
+
+- Fast inference + tight tool loop → real-time and action-heavy tasks (game
+  mode, live UI navigation) are feasible.
+- Slower loop → prefer deliberate, verification-heavy tasks and lean payloads
+  (see [Bandwidth Optimization](#bandwidth-optimization)); every screen read
+  you make costs context, so read regions, not whole screens.
+
+The perceive-act loop below runs at *your* pace — the server never rate-limits
+you, and never thinks for you.
 
 ---
 
