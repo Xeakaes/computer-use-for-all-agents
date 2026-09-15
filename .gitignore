@@ -21,6 +21,7 @@ _frames/
 *.jpg
 *.png
 !docs/images/*.png
+!docs/images/*.jpg
 d1.json
 f.jpg
 f2.jpg
