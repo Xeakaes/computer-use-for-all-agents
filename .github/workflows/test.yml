@@ -22,42 +22,47 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Start server
-        run: |
-          # Start the server fully detached with output redirected to files.
-          # A child that inherits the step's stdout/stderr pipes is killed
-          # when the step ends and the pipes close (Windows runner behavior)
-          # — file redirection avoids that. /token is probed because it is
-          # the only auth-free endpoint (API paths require the token).
-          Start-Process -FilePath python -ArgumentList "server.py" `
-            -RedirectStandardOutput server-ci.log -RedirectStandardError server-ci.err.log `
-            -WindowStyle Hidden
-          $timeout = 30
-          $elapsed = 0
-          while ($elapsed -lt $timeout) {
-            try {
-              $response = Invoke-WebRequest -Uri "http://127.0.0.1:8745/token" -TimeoutSec 2 -ErrorAction Stop
-              if ($response.StatusCode -eq 200) { break }
-            } catch { }
-            Start-Sleep -Seconds 1
-            $elapsed++
-          }
-          if ($elapsed -ge $timeout) {
-            if (Test-Path server-ci.err.log) { Get-Content server-ci.err.log | Write-Host }
-            Write-Error "Server failed to start within ${timeout}s"
-            exit 1
-          }
-          Write-Host "Server is ready"
-
-      - name: Run security tests
-        run: python test-security.py
+      # The server and the tests must live in the SAME step: a process
+      # started in one step does not reliably survive into the next one on
+      # Windows runners (the runner tears down the step's process tree).
+      # Output is redirected to files because anything inheriting the
+      # step's pipes breaks Flask's logging.
+      - name: Run security tests (server started in-step)
         env:
           PYTHONIOENCODING: utf-8
+        run: |
+          $server = Start-Process -FilePath python -ArgumentList "server.py" `
+            -RedirectStandardOutput server-ci.log -RedirectStandardError server-ci.err.log `
+            -WindowStyle Hidden -PassThru
+          try {
+            # Wait for readiness. /token is the only auth-free endpoint on
+            # localhost — /api/* requires the X-Auth-Token header.
+            $timeout = 30
+            $elapsed = 0
+            while ($elapsed -lt $timeout) {
+              try {
+                $response = Invoke-WebRequest -Uri "http://127.0.0.1:8745/token" -TimeoutSec 2 -ErrorAction Stop
+                if ($response.StatusCode -eq 200) { break }
+              } catch { }
+              Start-Sleep -Seconds 1
+              $elapsed++
+            }
+            if ($elapsed -ge $timeout) {
+              Write-Host "--- server-ci.err.log ---"
+              if (Test-Path server-ci.err.log) { Get-Content server-ci.err.log | Write-Host }
+              Write-Host "--- server-ci.log ---"
+              if (Test-Path server-ci.log) { Get-Content server-ci.log | Write-Host }
+              Write-Error "Server failed to start within ${timeout}s"
+              exit 1
+            }
+            Write-Host "Server is ready"
+            python test-security.py
+          }
+          finally {
+            Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          }
 
-      - name: Stop server
+      - name: Cleanup orphan processes
         if: always()
         run: |
           $procs = Get-NetTCPConnection -LocalPort 8745 -ErrorAction SilentlyContinue |
