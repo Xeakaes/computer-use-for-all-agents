@@ -132,7 +132,11 @@ if defined PUBLIC_URL (
 )
 echo   Header   : X-Auth-Token: !TOKEN!
 echo   Auth     : X-Auth-Token header required  ^(401 otherwise^)
-echo   Note     : header-only auth; tokens in URLs leak into logs/history
+echo   Headerless clients: create a scoped key ^(see below^), then use
+echo              !PUBLIC_URL!/mcp/SCOPED-KEY  as the endpoint URL.
+echo.
+echo   Create a scoped key ^(recommended for headerless connectors^):
+echo     curl -X POST http://127.0.0.1:8745/api/keys -H "X-Auth-Token: !TOKEN!" -H "Content-Type: application/json" -d "{\"action\"^:"create\"^,\"name\"^:"spark\"^,\"expires_in_hours\"^:24}"
 echo   ------------------------------------------------------------
 echo.
 echo   Quick test from anywhere:
@@ -142,6 +146,9 @@ if defined PUBLIC_URL (
 ) else (
     echo     curl http://127.0.0.1:8751/health
 )
+echo.
+echo   Revoke the scoped key when done:
+echo     curl -X POST http://127.0.0.1:8745/api/keys -H "X-Auth-Token: !TOKEN!" -H "Content-Type: application/json" -d "{\"action\"^:"revoke\"^,\"name\"^:"spark\"}"
 echo.
 echo   Stop everything: run stop-server.bat
 echo   ^(or close the three minimized windows: REST / MCP / tunnel^)

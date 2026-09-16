@@ -62,6 +62,7 @@ from mcp.server.mcpserver import MCPServer, Image
 
 BASE_URL = os.environ.get("SCREEN_CONTROL_URL", "http://127.0.0.1:8745")
 _TOKEN_FILE = pathlib.Path(__file__).parent / ".token"
+_APIKEYS_FILE = pathlib.Path(__file__).parent / ".apikeys"
 
 
 def _token() -> str:
@@ -74,6 +75,47 @@ def _token() -> str:
     raise RuntimeError(
         "No auth token: set SCREEN_CONTROL_TOKEN or make sure server.py has "
         "run once (it writes .token next to mcp_server.py)")
+
+
+def _scoped_key_hashes() -> dict:
+    """
+    Load persistent API key hashes from .apikeys (hash -> expiry epoch|None).
+    Used to validate scoped keys embedded in the URL path (/mcp/<key>) for
+    headerless clients (SC-06). Cached by file mtime so revocations and
+    creations by the REST server take effect immediately.
+    """
+    cache = _scoped_key_hashes._cache  # type: ignore[attr-defined]
+    try:
+        mtime = _APIKEYS_FILE.stat().st_mtime
+    except OSError:
+        return {}
+    if cache["mtime"] != mtime:
+        from datetime import datetime as _dt
+        keys: dict = {}
+        try:
+            for line in _APIKEYS_FILE.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                h = parts[0].strip()
+                exp = None
+                if len(parts) > 2 and parts[2].strip():
+                    raw = parts[2].strip()
+                    try:
+                        exp = (_dt.fromisoformat(raw).timestamp()
+                               if (":" in raw or "-" in raw) else float(raw))
+                    except (ValueError, OSError):
+                        exp = None
+                if len(h) == 64 and all(c in "0123456789abcdef" for c in h):
+                    keys[h] = exp
+        except OSError:
+            keys = {}
+        cache["mtime"] = mtime
+        cache["keys"] = keys
+    return cache["keys"]
+
+_scoped_key_hashes._cache = {"mtime": None, "keys": {}}  # type: ignore[attr-defined]
 
 
 def _api(method: str, path: str, body: dict | None = None,
@@ -340,13 +382,19 @@ def _run_http(port: int) -> None:
     """
     Streamable-HTTP transport for remote/cloud agents, wrapped in a token
     guard: every request must carry the X-Auth-Token header (same token as
-    the REST server) or it is rejected with 401 before reaching any tool.
+    the REST server) — or, for clients that cannot send headers, embed a
+    scoped API key in the URL path (/mcp/<key>; master token rejected there).
     GET /health is the only open path (liveness probe for start-server.bat).
     Binds 127.0.0.1 only — expose via a tunnel for remote access.
     """
     import uvicorn
 
-    expected = _token()
+    # NOTE: resolve the expected token per request, not once at startup.
+    # server.py regenerates .token on every restart; when both servers are
+    # (re)started together, a startup-time snapshot can capture the PREVIOUS
+    # session token and every authenticated request would 401 afterwards.
+    def _expected() -> str:
+        return _token()
     # DNS-rebinding protection is disabled deliberately: tunneled/cloud
     # requests arrive with a foreign Host header, and the rebinding threat
     # (a malicious page making the visitor's browser talk to localhost)
@@ -373,6 +421,40 @@ def _run_http(port: int) -> None:
         if method == "OPTIONS":  # CORS preflight carries no custom headers
             await inner(scope, receive, send)
             return
+
+        # SC-06 compromise for headerless clients (e.g. web connectors):
+        # /mcp/<scoped-key> authenticates a persistent, optionally time-scoped
+        # API key embedded in the URL path. The master session token is
+        # explicitly REJECTED in the URL — scope the blast radius instead:
+        # short-lived key + revoke when done (POST /api/keys).
+        import hashlib as _hashlib
+        import re as _re
+        import time as _time
+        m = _re.fullmatch(r"/mcp/([0-9a-fA-F]{48})", path)
+        if m:
+            candidate = m.group(1).lower()
+            if candidate == _expected():
+                await _send_json(send, 403,
+                                 {"ok": False,
+                                  "error": "refusing the master session token "
+                                           "in a URL; create a scoped key via "
+                                           "POST /api/keys instead"})
+                return
+            kh = _hashlib.sha256(candidate.encode()).hexdigest()
+            exp = _scoped_key_hashes().get(kh)
+            if exp is None:
+                await _send_json(send, 401,
+                                 {"ok": False, "error": "unknown scoped key"})
+                return
+            if _time.time() >= exp:
+                await _send_json(send, 403,
+                                 {"ok": False, "error": "scoped key expired"})
+                return
+            scope = dict(scope)
+            scope["path"] = "/mcp"
+            await inner(scope, receive, send)
+            return
+
         headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                    for k, v in scope.get("headers", [])}
         # SC-06: header-only authentication. A ?token= query fallback was
@@ -381,7 +463,7 @@ def _run_http(port: int) -> None:
         # control. Clients that cannot send custom headers must use a wrapper
         # (e.g. a local stdio mcp_server.py proxying to this endpoint).
         supplied = headers.get("x-auth-token")
-        if supplied != expected:
+        if supplied != _expected():
             await _send_json(send, 401,
                              {"ok": False,
                               "error": "unauthorized: missing or invalid "

@@ -167,6 +167,7 @@ APIKEYS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".apikey
 # Load persistent API keys
 _persistent_keys: set[str] = set()
 _api_key_names: dict[str, str] = {}  # key_hash -> name
+_api_key_expiry: dict[str, float] = {}  # key_hash -> unix epoch (None = never)
 
 def _load_api_keys():
     """Load API keys from .apikeys file (format: hash\\tname per line).
@@ -183,13 +184,25 @@ def _load_api_keys():
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
-                parts = line.split("\t", 1)
+                parts = line.split("\t")
                 key_hash = parts[0].strip()  # Already a hash from file
                 name = parts[1].strip() if len(parts) > 1 else "unnamed"
+                # Optional third column: expiry (ISO timestamp or unix epoch).
+                expiry = None
+                if len(parts) > 2 and parts[2].strip():
+                    raw_exp = parts[2].strip()
+                    try:
+                        expiry = (datetime.fromisoformat(raw_exp).timestamp()
+                                  if ":" in raw_exp or "-" in raw_exp
+                                  else float(raw_exp))
+                    except (ValueError, OSError):
+                        expiry = None  # unreadable expiry -> treat as never
                 # Validate it looks like a hex hash (64 chars for SHA256)
                 if len(key_hash) == 64 and all(c in '0123456789abcdef' for c in key_hash):
                     _persistent_keys.add(key_hash)
                     _api_key_names[key_hash] = name
+                    if expiry is not None:
+                        _api_key_expiry[key_hash] = expiry
     except Exception:
         pass
 
@@ -200,7 +213,10 @@ def _save_api_keys():
         f.write("# Format: key\\tname (one per line)\n")
         f.write(f"# Generated: {datetime.now().isoformat()}\n\n")
         for key_hash, name in _api_key_names.items():
-            f.write(f"{key_hash}\t{name}\n")
+            exp = _api_key_expiry.get(key_hash)
+            f.write(f"{key_hash}\t{name}"
+                    + (f"\t{datetime.fromtimestamp(exp).isoformat()}" if exp else "")
+                    + "\n")
 
 # Write session token
 with open(SESSION_TOKEN_FILE, "w", encoding="utf-8") as _fh:
@@ -211,11 +227,18 @@ _load_api_keys()
 
 
 def _is_valid_token(token: str) -> bool:
-    """Check if token is valid (session token or persistent API key)."""
+    """Check if token is valid (session token or persistent API key).
+
+    Persistent keys honour their optional expiry: an expired key is rejected
+    even though its hash is still listed (SC-06: time-scoped credentials).
+    """
     if secrets.compare_digest(token.encode("utf-8", "ignore"), SESSION_TOKEN.encode()):
         return True
     key_hash = hashlib.sha256(token.encode()).hexdigest()
-    return key_hash in _persistent_keys
+    if key_hash not in _persistent_keys:
+        return False
+    exp = _api_key_expiry.get(key_hash)
+    return exp is None or time.time() < exp
 
 
 @app.before_request
@@ -409,24 +432,54 @@ def api_keys_manage():
     """
     API Key management:
       POST /api/keys {"action":"create","name":"my-key"}  -> creates new key
+      POST /api/keys {"action":"create","name":"k","expires_in_hours":24}
+                                                          -> time-scoped key (SC-06)
       POST /api/keys {"action":"list"}                     -> lists key names
       POST /api/keys {"action":"revoke","name":"my-key"}   -> revokes key
+
+    Time-scoped keys are meant for clients that cannot send custom headers
+    (e.g. web connectors taking the key in the URL): scope the blast radius
+    by giving them a short lifetime and revoking them when done.
     """
     body = request.get_json(force=True, silent=True) or {}
     action = body.get("action", "list")
     
     if action == "create":
         name = body.get("name", f"key-{len(_persistent_keys)+1}")
+        hours = body.get("expires_in_hours")
         new_key = secrets.token_hex(24)
         key_hash = hashlib.sha256(new_key.encode()).hexdigest()
         _persistent_keys.add(key_hash)
         _api_key_names[key_hash] = name
+        expiry_iso = None
+        if hours is not None:
+            try:
+                hours = float(hours)
+                if hours <= 0:
+                    raise ValueError
+            except ValueError:
+                _persistent_keys.discard(key_hash)
+                del _api_key_names[key_hash]
+                return jsonify({"ok": False,
+                                "error": "expires_in_hours must be a positive number"}), 400
+            expiry = time.time() + hours * 3600
+            _api_key_expiry[key_hash] = expiry
+            expiry_iso = datetime.fromtimestamp(expiry).isoformat()
         _save_api_keys()
-        return jsonify({"ok": True, "key": new_key, "name": name, 
-                        "message": "Save this key - it won't be shown again"})
+        msg = "Save this key - it won't be shown again"
+        if expiry_iso:
+            msg += f" - expires {expiry_iso}"
+        return jsonify({"ok": True, "key": new_key, "name": name,
+                        "expires_at": expiry_iso,
+                        "message": msg})
     
     elif action == "list":
-        keys = [{"name": name, "hash": h[:8]} for h, name in _api_key_names.items()]
+        now = time.time()
+        keys = [{"name": name, "hash": h[:8],
+                 "expires_at": (datetime.fromtimestamp(e).isoformat()
+                                if (e := _api_key_expiry.get(h)) else None),
+                 "expired": bool(_api_key_expiry.get(h)) and _api_key_expiry[h] <= now}
+                for h, name in _api_key_names.items()]
         return jsonify({"ok": True, "keys": keys, "count": len(keys)})
     
     elif action == "revoke":
@@ -439,6 +492,7 @@ def api_keys_manage():
         for h in to_remove:
             _persistent_keys.discard(h)
             del _api_key_names[h]
+            _api_key_expiry.pop(h, None)
         _save_api_keys()
         return jsonify({"ok": True, "revoked": name})
     

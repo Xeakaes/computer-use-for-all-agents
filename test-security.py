@@ -12,10 +12,13 @@ Coverage:
   8. Host header trust (SC-01): foreign Host header -> 421 (DNS rebinding guard)
   9. Background-path safety parity (SC-02): Alt+F4 blocked via /api/window/post
  10. Resource limits (SC-05): oversized region/scale/text rejected with 4xx
+ 11. Scoped API keys (SC-06): authenticate, expire, revoke
+ 12. MCP scoped-key URL (optional): /mcp/<key> works, master token refused
 """
 
 import json
 import sys
+import time
 import urllib.request
 
 BASE = "http://127.0.0.1:8745"
@@ -238,6 +241,75 @@ try:
     check("Huge region -> 400", False, "no error raised")
 except urllib.error.HTTPError as e:
     check("Huge region -> 400", e.code == 400, str(e.code))
+
+
+# --- 11) Scoped API keys (SC-06): expiry + revocation ---
+
+print("\n== Scoped API Keys (SC-06) ==")
+s, r = post("/api/keys", {"action": "create", "name": "sec-test-key",
+                          "expires_in_hours": 0.001})  # ~3.6 s
+check("Scoped key created", s == 200 and r.get("ok") and r.get("key"),
+      str(r.get("expires_at", "")))
+sk = r.get("key", "")
+
+req = urllib.request.Request(BASE + "/api/info", headers={"X-Auth-Token": sk})
+try:
+    urllib.request.urlopen(req, timeout=5)
+    check("Scoped key authenticates", True)
+except urllib.error.HTTPError as e:
+    check("Scoped key authenticates", False, str(e.code))
+
+r = post("/api/keys", {"action": "list"})[1]
+entry = next((k for k in r.get("keys", []) if k["name"] == "sec-test-key"), None)
+check("Expiry listed for key", entry is not None and entry.get("expires_at"))
+
+time.sleep(4.5)  # let the ~3.6 s lifetime lapse
+req = urllib.request.Request(BASE + "/api/info", headers={"X-Auth-Token": sk})
+try:
+    urllib.request.urlopen(req, timeout=5)
+    check("Expired key rejected (401)", False, "no error raised")
+except urllib.error.HTTPError as e:
+    check("Expired key rejected (401)", e.code == 401, str(e.code))
+
+s, r = post("/api/keys", {"action": "revoke", "name": "sec-test-key"})
+check("Scoped key revoked", s == 200 and r.get("ok"))
+
+
+# --- 12) MCP scoped-key URL (optional; needs the MCP HTTP server) ---
+
+print("\n== MCP Scoped Key URL (SC-06, optional) ==")
+try:
+    urllib.request.urlopen("http://127.0.0.1:8751/health", timeout=2)
+    mcp_up = True
+except Exception:
+    mcp_up = False
+if mcp_up:
+    s, r = post("/api/keys", {"action": "create", "name": "mcp-url-test",
+                              "expires_in_hours": 1})
+    mk = r.get("key", "")
+    rpc = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                      "params": {"protocolVersion": "2025-03-26",
+                                 "capabilities": {},
+                                 "clientInfo": {"name": "t", "version": "0"}}}).encode()
+    hdrs = {"Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream"}
+    req = urllib.request.Request(f"http://127.0.0.1:8751/mcp/{mk}", data=rpc,
+                                 headers=hdrs)
+    try:
+        resp = urllib.request.urlopen(req, timeout=5)
+        check("Scoped key in MCP URL works", resp.status == 200, str(resp.status))
+    except urllib.error.HTTPError as e:
+        check("Scoped key in MCP URL works", False, str(e.code))
+    req = urllib.request.Request(f"http://127.0.0.1:8751/mcp/{TOKEN}", data=rpc,
+                                 headers=hdrs)
+    try:
+        urllib.request.urlopen(req, timeout=5)
+        check("Master token in URL refused", False, "no error raised")
+    except urllib.error.HTTPError as e:
+        check("Master token in URL refused", e.code in (401, 403), str(e.code))
+    post("/api/keys", {"action": "revoke", "name": "mcp-url-test"})
+else:
+    print("- MCP HTTP server (8751) not running; skipping optional checks")
 
 
 # --- Summary ---

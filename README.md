@@ -784,12 +784,36 @@ cloudflared tunnel --url http://127.0.0.1:8751
 ```
 
 Then configure the agent's MCP connection with `<tunnel-url>/mcp` plus the
-token from `.token` as a header (`X-Auth-Token`). If the connector cannot
-send custom headers, do not fall back to a query-string token — run a local
-stdio `mcp_server.py` instead.
+token from `.token` as a header (`X-Auth-Token`).
+
+### Headerless connectors (scoped keys)
+
+For clients that cannot send custom headers (e.g. web connectors that only
+take an endpoint URL), create a **scoped API key** — a persistent, optionally
+time-limited credential — and embed it in the URL path:
+
+```bash
+# Create a 24-hour scoped key (requires the server to be running)
+curl -X POST http://127.0.0.1:8745/api/keys -H "X-Auth-Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"create","name":"spark","expires_in_hours":24}'
+
+# Connector endpoint becomes:
+#   https://<tunnel-url>/mcp/<scoped-key>
+```
+
+Design guarantees (SC-06):
+- The **master session token is refused in URLs** (403) — only scoped keys
+  may travel there
+- Scoped keys **expire automatically**; expired keys authenticate nothing
+- Scoped keys are **revocable by name** at any moment via `POST /api/keys`
+  (`{"action":"revoke","name":"spark"}`) — revocation takes effect
+  immediately on every endpoint
+- The `.apikeys` file stores only SHA-256 hashes, never raw keys
 
 > ⚠️ A tunnel exposes PC control to the internet. Keep the token secret,
-> prefer short-lived tunnels, and stop the server when not in use.
+> prefer short-lived tunnels and scoped keys for headerless connectors,
+> and stop the server when not in use.
 
 ### One-Command Startup (launcher + auto-tunnel)
 
@@ -1122,7 +1146,7 @@ screen-control/
 ├── requirements.txt     # Python dependencies
 ├── start-server.bat     # One command: REST + MCP + cloud tunnel (Windows)
 ├── stop-server.bat      # Stop all three processes
-├── test-security.py     # Security + game-mode test suite (19 checks)
+├── test-security.py     # Security + game-mode test suite (34 checks)
 ├── test-game.py         # Live game-mechanics test (app launch → draw → safe close)
 ├── test-endtoend.py     # End-to-end test: open Notepad → type → save → verify
 ├── .github/workflows/   # CI: runs the security suite on every push

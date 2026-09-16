@@ -93,7 +93,10 @@ token handling, no manual JSON. All safety rules still apply (they live in
   public MCP URL and the token in the terminal. Manual equivalent:
   `python mcp_server.py --http --port 8751` +
   `cloudflared tunnel --url http://127.0.0.1:8751`. The HTTP endpoint requires
-  the `X-Auth-Token` header on every request — query-string tokens
+  the `X-Auth-Token` header on every request. If your client cannot send
+  custom headers, ask the operator for a **scoped key URL**
+  (`<tunnel>/mcp/<scoped-key>`) — the master token is refused in URLs, and
+  scoped keys are time-limited and revocable. Query-string tokens
   (`?token=...`) are rejected by design. The operator's token is in `.token`.
 
 ### Tool mapping (HTTP → MCP)
