@@ -611,6 +611,15 @@ if IS_WINDOWS:
             _user32.ShowWindow(hwnd, 9)  # SW_RESTORE
             time.sleep(0.35)
 
+        # SC-04: surface failure instead of silently returning. Callers that
+        # replay SendInput right after this call MUST know the focus never
+        # landed on the target — otherwise input goes to the foreground window
+        # (the exact wrong-window scenario the safety model forbids).
+        if _user32.GetForegroundWindow() != hwnd:
+            raise RuntimeError(
+                f"focus_window: could not bring hwnd {hwnd} to the foreground "
+                f"(Windows refused the focus switch)")
+
     def _set_topmost(hwnd: int, topmost: bool = True) -> None:
         """Pin a window above all others (or unpin it)."""
         HWND_NOTOPMOST = -2
@@ -919,6 +928,46 @@ def vk_from_name(name: str) -> int:
     raise ValueError(f"Unknown key name: {name}")
 
 
+def process_name(pid: int) -> str | None:
+    """
+    Resolve a PID to its process (executable base) name via the Win32 toolhelp
+    snapshot (SC-03). Works for windowless/background processes; returns None
+    when the PID does not exist or cannot be queried.
+    """
+    if not IS_WINDOWS:
+        return None
+    import ctypes
+    TH32CS_SNAPPROCESS = 0x2
+    kernel32 = ctypes.windll.kernel32
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [("dwSize", ctypes.c_ulong),
+                    ("cntUsage", ctypes.c_ulong),
+                    ("th32ProcessID", ctypes.c_ulong),
+                    ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                    ("th32ModuleID", ctypes.c_ulong),
+                    ("cntThreads", ctypes.c_ulong),
+                    ("th32ParentProcessID", ctypes.c_ulong),
+                    ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", ctypes.c_ulong),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+
+    snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snap == -1 or snap == 0xFFFFFFFFFFFFFFFF:  # INVALID_HANDLE_VALUE (-1)
+        return None
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            if entry.th32ProcessID == pid:
+                return entry.szExeFile
+            ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
+        return None  # PID not found in the snapshot
+    finally:
+        kernel32.CloseHandle(snap)
+
+
 def window_type_text(hwnd: int, text: str) -> dict:
     """
     Type text into a window WITHOUT focusing it (WM_CHAR).
@@ -944,7 +993,13 @@ def window_type_text(hwnd: int, text: str) -> dict:
 
 
 def window_key(hwnd: int, key: str) -> dict:
-    """Send a single key press to a window WITHOUT focusing it (VK-based)."""
+    """
+    Send a single key press to a window WITHOUT focusing it (VK-based).
+    Safety parity (SC-02): the forbidden-key policy applies to the background
+    path too — an agent must not reach Alt+F4 etc. through PostMessage when
+    the direct route blocks it.
+    """
+    _assert_allowed([key])
     vk = vk_from_name(key)
     scan = _scan_code(vk)
     _user32.PostMessageW(hwnd, WM_KEYDOWN, vk, (scan << 16) | 1)
@@ -954,7 +1009,12 @@ def window_key(hwnd: int, key: str) -> dict:
 
 
 def window_hotkey(hwnd: int, keys: list) -> dict:
-    """Send a key combination to a window WITHOUT focusing it (e.g. ['ctrl','s'])."""
+    """
+    Send a key combination to a window WITHOUT focusing it (e.g. ['ctrl','s']).
+    Safety parity (SC-02): forbidden hotkeys are blocked on the background
+    path exactly like on the focused SendInput path.
+    """
+    _assert_allowed(list(keys))
     vks = [vk_from_name(k) for k in keys]
     for vk in vks:
         _user32.PostMessageW(hwnd, WM_KEYDOWN, vk, (_scan_code(vk) << 16) | 1)

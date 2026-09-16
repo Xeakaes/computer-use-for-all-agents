@@ -39,6 +39,46 @@ import control
 
 app = Flask(__name__)
 
+# Request-body ceiling: every JSON endpoint reads the full body, so an
+# oversized payload (e.g. a multi-GB base64 image to /api/vision/diff) must
+# be rejected before it is buffered. Flask answers 413 automatically.
+app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024  # 1 MB
+
+# ---------------------------------------------------------------------------
+# Resource limits (SC-05) — every user-controllable size knob is capped so a
+# misbehaving (or hostile) client cannot turn capture/OCR/input endpoints
+# into memory or lock-starvation attacks.
+# ---------------------------------------------------------------------------
+MAX_REGION_DIM = 10_000            # max width/height of a capture region (px)
+MAX_REGION_PIXELS = 33_177_600     # 7680x4320 — full 8K frame
+SCALE_MIN, SCALE_MAX = 0.1, 2.0    # vision/frame & stream scale bounds
+MAX_TEXT_CHARS = 10_000            # per /api/key & /api/window/post type call
+MAX_STREAM_CLIENTS = 10            # concurrent MJPEG subscribers
+
+# Pillow decompression-bomb guard for client-supplied images (SC-05):
+# /api/vision/diff accepts a base64 previous frame; a crafted PNG can expand
+# to gigabytes of RAM. 40 MP comfortably covers a full 8K frame.
+try:
+    from PIL import Image as _PILImage
+    _PILImage.MAX_IMAGE_PIXELS = 40_000_000
+except Exception:  # pragma: no cover - Pillow is a hard dependency anyway
+    pass
+
+# Host headers that may talk to the API when bound to loopback (SC-01).
+# A DNS-rebinding page resolves its domain to 127.0.0.1 and its requests
+# arrive with a foreign Host header — those are refused with 421.
+_TRUSTED_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _normalize_host(value: str) -> str:
+    """Strip port (and IPv6 brackets) from a Host header value."""
+    value = (value or "").strip().lower()
+    if value.startswith("["):          # [::1]:8745
+        return value.split("]", 1)[0].lstrip("[")
+    if value.count(":") == 1:          # 127.0.0.1:8745
+        return value.split(":", 1)[0]
+    return value
+
 # ---------------------------------------------------------------------------
 # Structured Logging
 # ---------------------------------------------------------------------------
@@ -104,6 +144,8 @@ def log_event(event_type: str, data: dict = None):
 _input_lock = threading.Lock()   # input actions (mouse, keyboard, game, window ops)
 _read_lock = threading.Lock()    # capture, OCR, vision, monitor/window enumeration
 _lock = _input_lock              # legacy alias — input side; do NOT use for reads
+_stream_lock = threading.Lock()  # guards the MJPEG client counter
+_stream_clients = 0              # active /api/stream subscribers (SC-05 cap)
 _ocr_engine = None
 _ocr_error = None
 _bind_host = "127.0.0.1"  # Track bind address for security decisions
@@ -178,6 +220,15 @@ def _is_valid_token(token: str) -> bool:
 
 @app.before_request
 def _require_auth():
+    # SC-01: when bound to loopback, only loopback Host headers are accepted.
+    # This must run BEFORE the public-path exemption so /token cannot be read
+    # by a DNS-rebinding page (its Host header is the attacker's domain).
+    if _bind_host == "127.0.0.1":
+        host = _normalize_host(request.host)
+        if host and host not in _TRUSTED_HOSTS:
+            return jsonify({"ok": False,
+                            "error": f"untrusted Host header: {request.host} "
+                                     f"(possible DNS rebinding)"}), 421
     # Exempt public endpoints
     if request.path in ("/", "/token"):
         return None
@@ -298,12 +349,14 @@ def _index_path() -> Path:
 @app.get("/")
 def index():
     try:
-        return Response(_index_path().read_text(encoding="utf-8"),
+        resp = Response(_index_path().read_text(encoding="utf-8"),
                         mimetype="text/html")
     except FileNotFoundError:
-        return Response(
+        resp = Response(
             "<h1>screen-control</h1><p>Web UI file (index.html) not found. "
-            "The REST API is unaffected.</p>", mimetype="text/html"), 200
+            "The REST API is unaffected.</p>", mimetype="text/html")
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.get("/token")
@@ -320,7 +373,10 @@ def token_bootstrap():
             "ok": False, 
             "error": "Token endpoint disabled for non-localhost binding. Use persistent API keys instead."
         }), 403
-    return jsonify({"ok": True, "token": SESSION_TOKEN, "type": "session"})
+    resp = jsonify({"ok": True, "token": SESSION_TOKEN, "type": "session"})
+    # Never cache a credential in any layer (browser, proxy) (SC-01).
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.get("/api/session")
@@ -418,14 +474,10 @@ def monitors():
 @app.get("/api/screenshot")
 def screenshot():
     monitor = request.args.get("monitor", 1, type=int)
-    region = None
-    r = request.args.get("region")
-    if r:
-        try:
-            x, y, w, h = (int(v) for v in r.split(","))
-            region = (x, y, w, h)
-        except ValueError:
-            return jsonify({"ok": False, "error": "region must be x,y,w,h"}), 400
+    try:
+        region = _validated_region()
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     with _read_lock:
         data = control.screenshot_jpeg(monitor, region)
     return Response(data, mimetype="image/jpeg")
@@ -446,15 +498,43 @@ def screenshot():
 _last_gray = {"img": None}
 
 
-def _parse_region():
+def _validated_region():
+    """
+    Parse and bound-check the ?region=x,y,w,h query parameter (SC-05).
+    Returns (x, y, w, h), None when absent, or raises ValueError with a
+    client-safe message on malformed/out-of-bounds input.
+    """
     r = request.args.get("region")
     if not r:
         return None
     try:
         x, y, w, h = (int(v) for v in r.split(","))
-        return (x, y, w, h)
     except ValueError:
-        return None
+        raise ValueError("region must be x,y,w,h integers")
+    if not (0 < w <= MAX_REGION_DIM and 0 < h <= MAX_REGION_DIM):
+        raise ValueError(f"region w/h must be within 1..{MAX_REGION_DIM}")
+    if w * h > MAX_REGION_PIXELS:
+        raise ValueError(f"region area exceeds {MAX_REGION_PIXELS} px")
+    if not (-MAX_REGION_DIM <= x <= MAX_REGION_DIM and
+            -MAX_REGION_DIM <= y <= MAX_REGION_DIM):
+        raise ValueError(f"region x/y must be within +-{MAX_REGION_DIM}")
+    return (x, y, w, h)
+
+
+def _validated_scale() -> float:
+    """Parse and bound-check the ?scale= parameter (SC-05)."""
+    scale = request.args.get("scale", 1.0, type=float)
+    if not (SCALE_MIN <= scale <= SCALE_MAX):
+        raise ValueError(f"scale must be within {SCALE_MIN}..{SCALE_MAX}")
+    return scale
+
+
+def _validated_text(body: dict) -> str:
+    """Extract and length-check the 'text' field of an input request (SC-05)."""
+    text = body.get("text", "")
+    if not isinstance(text, str) or len(text) > MAX_TEXT_CHARS:
+        raise ValueError(f"text must be a string of at most {MAX_TEXT_CHARS} chars")
+    return text
 
 
 @app.get("/api/vision/frame")
@@ -467,8 +547,11 @@ def vision_frame():
       ?format=base64    JSON {"b64": ...} — for text-only transports
       ?region=x,y,w,h   sub-region
     """
-    region = _parse_region()
-    scale = request.args.get("scale", 1.0, type=float)
+    try:
+        region = _validated_region()
+        scale = _validated_scale()
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     gray = request.args.get("gray", 0, type=int)
     monitor = request.args.get("monitor", 1, type=int)
     quality = min(95, max(20, request.args.get("quality", 80, type=int)))
@@ -488,21 +571,37 @@ def vision_frame():
 @app.get("/api/stream")
 def stream():
     """MJPEG live stream: ?fps=10 (1..30) &quality=&scale=&region=."""
+    global _stream_clients
     fps = min(30, max(1, request.args.get("fps", 10, type=int)))
     quality = min(95, max(20, request.args.get("quality", 70, type=int)))
-    scale = request.args.get("scale", 1.0, type=float)
-    region = _parse_region()
+    try:
+        scale = _validated_scale()
+        region = _validated_region()
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    with _stream_lock:
+        if _stream_clients >= MAX_STREAM_CLIENTS:
+            return jsonify({"ok": False,
+                            "error": f"too many concurrent streams "
+                                     f"(limit {MAX_STREAM_CLIENTS})"}), 429
+        _stream_clients += 1
     interval = 1.0 / fps
 
     def gen():
-        while True:
-            t0 = time.time()
-            with _read_lock:
-                img = control.screenshot_scaled(1, region, scale=scale)
-            buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=quality)
-            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buf.getvalue() + b"\r\n")
-            time.sleep(max(0.0, interval - (time.time() - t0)))
+        global _stream_clients
+        try:
+            while True:
+                t0 = time.time()
+                with _read_lock:
+                    img = control.screenshot_scaled(1, region, scale=scale)
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=quality)
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                       + buf.getvalue() + b"\r\n")
+                time.sleep(max(0.0, interval - (time.time() - t0)))
+        finally:
+            with _stream_lock:
+                _stream_clients -= 1
 
     return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
@@ -517,7 +616,10 @@ def vision_diff():
       ?region=x,y,w,h          sub-region
     Returns: changed, changed_pct, tiles (8x6 grid: pct + center coords), bbox.
     """
-    region = _parse_region()
+    try:
+        region = _validated_region()
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     body = request.get_json(force=True, silent=True) or {}
     import io as _io
     import base64 as _b64
@@ -526,6 +628,7 @@ def vision_diff():
             try:
                 from PIL import Image as _Image
                 prev = _Image.open(_io.BytesIO(_b64.b64decode(body["b64_prev"])))
+                prev.load()  # enforce the Pillow decompression-bomb limit now
             except Exception as exc:
                 return jsonify({"ok": False, "error": f"b64_prev decode failed: {exc}"}), 400
         else:
@@ -584,6 +687,9 @@ def key():
     action = body.get("action")
     log_event("key", {"action": action, "key": body.get("key"), "keys": body.get("keys")})
     try:
+        # Resource limit (SC-05): reject oversized text before taking the lock.
+        if action == "type":
+            _validated_text(body)
         with _lock:
             # SAFETY: if expect_hwnd is given, verify the foreground window
             # matches — refuse to type into the wrong window.
@@ -603,7 +709,7 @@ def key():
             elif action == "hotkey":
                 control.key_hotkey(*body.get("keys", []))
             elif action == "type":
-                control.type_text(body.get("text", ""), float(body.get("interval", 0.03)))
+                control.type_text(_validated_text(body), float(body.get("interval", 0.03)))
             elif action == "down":
                 control.key_down(body["key"])
             elif action == "up":
@@ -612,6 +718,8 @@ def key():
                 return jsonify({"ok": False, "error": f"unknown action: {action}"}), 400
     except PermissionError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 403
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
     return jsonify({"ok": True})
@@ -739,14 +847,27 @@ def window_op():
                     return jsonify({"ok": False, "error": "system process cannot be killed"}), 403
                 if pid == os.getpid():
                     return jsonify({"ok": False, "error": "cannot kill own process"}), 403
-                # Check the process name against the critical-process blacklist
-                for w in control.list_windows():
-                    if w["pid"] == pid:
-                        name = w["process"].lower()
-                        if name in DENY_KILL_PROCS:
-                            return jsonify({"ok": False,
-                                            "error": f"{name} is a critical system process"}), 403
-                        break
+                # SC-03: resolve the process name from the PID directly — not
+                # from the visible-window inventory. A windowless (background/
+                # headless) process previously bypassed the deny-list entirely.
+                proc_name = control.process_name(pid)
+                if proc_name is None:
+                    # Default-deny: a PID we cannot resolve may be a protected
+                    # system process with a restricted query — refuse it.
+                    return jsonify({"ok": False,
+                                    "error": "cannot resolve process name; "
+                                             "refusing to kill unknown pid"}), 403
+                name = proc_name.lower()
+                if name in DENY_KILL_PROCS:
+                    return jsonify({"ok": False,
+                                    "error": f"{name} is a critical system process"}), 403
+                # Require confirmation of the expected process name to prevent
+                # killing a newly-reused PID the client did not intend to hit.
+                expect_proc = body.get("expect_process")
+                if expect_proc and expect_proc.lower() != name:
+                    return jsonify({"ok": False,
+                                    "error": f"process mismatch: expected "
+                                             f"'{expect_proc}', got '{name}'"}), 409
                 return jsonify(control.kill_process(pid))
             else:
                 return jsonify({"ok": False, "error": f"unknown action: {action}"}), 400
@@ -843,6 +964,19 @@ def window_post():
         if mode not in ("background", "focused"):
             return jsonify({"ok": False, "error": f"unknown mode: {mode}"}), 400
 
+        # Safety parity across ALL delivery paths (SC-02): background
+        # PostMessage input must respect the same forbidden-key policy as the
+        # direct /api/key route. Enforced here in addition to the control-layer
+        # guard inside window_key()/window_hotkey() (defense in depth).
+        if action == "key" and body.get("key"):
+            control._assert_allowed([str(body["key"])])
+        if action == "hotkey" and body.get("keys"):
+            control._assert_allowed([str(k) for k in body["keys"]])
+
+        # Resource limit (SC-05): reject oversized text before taking the lock.
+        if action == "type":
+            _validated_text(body)
+
         if mode == "focused":
             with _input_lock:
                 result = _focused_window_input(hwnd, action, body)
@@ -850,7 +984,7 @@ def window_post():
 
         with _input_lock:
             if action == "type":
-                return jsonify(control.window_type_text(hwnd, body.get("text", "")))
+                return jsonify(control.window_type_text(hwnd, _validated_text(body)))
             if action == "key":
                 return jsonify(control.window_key(hwnd, body["key"]))
             if action == "hotkey":
@@ -866,6 +1000,13 @@ def window_post():
                     hwnd, int(body["x1"]), int(body["y1"]),
                     int(body["x"]), int(body["y"]), body.get("button", "left")))
             return jsonify({"ok": False, "error": f"unknown action: {action}"}), 400
+    except PermissionError as exc:
+        # Forbidden key combo on any delivery path (SC-02) -> same 403 as /api/key.
+        return jsonify({"ok": False, "error": str(exc)}), 403
+    except RuntimeError as exc:
+        # Focus verification failure (SC-04): the target window did not take
+        # focus — a client--side conflict, not a server error.
+        return jsonify({"ok": False, "error": str(exc)}), 409
     except (ValueError, KeyError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
@@ -883,6 +1024,18 @@ def _focused_window_input(hwnd: int, action: str, body: dict) -> dict:
     """
     control.focus_window(hwnd)
     time.sleep(0.25)  # let the focus change settle before synthetic input
+    # SC-04: verify the focus actually landed on the target BEFORE any
+    # synthetic input. If Windows refused the focus switch or the user raced
+    # the agent, SendInput would type into whatever IS foreground — the exact
+    # scenario the safety model forbids. Refuse with 409 instead.
+    fg = control._user32.GetForegroundWindow() if control.IS_WINDOWS else None
+    if fg != hwnd:
+        fg_win = next((w for w in control.list_windows()
+                       if w["hwnd"] == fg), None)
+        fg_name = fg_win["process"] if fg_win else "?"
+        raise RuntimeError(
+            f"focus verification failed: foreground is {fg_name}, not the "
+            f"target window — input aborted to avoid typing into the wrong app")
     if action == "type":
         text = body.get("text", "")
         control.type_text(text)

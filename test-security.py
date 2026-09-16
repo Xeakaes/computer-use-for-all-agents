@@ -9,6 +9,9 @@ Coverage:
   5. Game mode: start -> cursor locked, move -> relative look, stop -> released
   6. Token auth: missing/wrong token -> 401, correct token -> 200
   7. POST Content-Type enforcement: non-JSON POST -> 415
+  8. Host header trust (SC-01): foreign Host header -> 421 (DNS rebinding guard)
+  9. Background-path safety parity (SC-02): Alt+F4 blocked via /api/window/post
+ 10. Resource limits (SC-05): oversized region/scale/text rejected with 4xx
 """
 
 import json
@@ -47,6 +50,23 @@ def get(path):
     req = urllib.request.Request(BASE + path, headers={"X-Auth-Token": TOKEN})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read())
+
+
+def get_raw(path, host=None):
+    """GET with full error access (and optional Host header override)."""
+    headers = {"X-Auth-Token": TOKEN}
+    if host:
+        headers["Host"] = host
+    req = urllib.request.Request(BASE + path, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            return e.code, json.loads(raw)
+        except Exception:
+            return e.code, {"raw": raw.decode(errors="replace")[:200]}
 
 
 passed, failed = 0, 0
@@ -169,6 +189,55 @@ print("\n== Watchdog (dry run) ==")
 r = get("/api/held")
 check("Held state returns ok", r.get("ok"))
 check("Watchdog count reported", "watchdog_count" in r, str(r.get("watchdog_count", "")))
+
+
+# --- 8) Host header trust (SC-01: DNS rebinding guard) ---
+
+print("\n== Host Header Trust (SC-01) ==")
+s, r = get_raw("/token", host="rebind.attacker.invalid:8745")
+check("Foreign Host /token -> 421", s == 421, str(s))
+s, r = get_raw("/token", host="127.0.0.1:8745")
+check("Loopback Host /token -> 200", s == 200 and r.get("ok"), str(s))
+s, r = get_raw("/api/info", host="rebind.attacker.invalid:8745")
+check("Foreign Host API -> 421", s == 421, str(s))
+
+
+# --- 9) Background-path safety parity (SC-02) ---
+
+print("\n== Background Path Safety Parity (SC-02) ==")
+if windows:
+    target = windows[0]
+    s, r = post("/api/window/post", {"hwnd": target["hwnd"], "action": "hotkey",
+                                     "keys": ["alt", "f4"], "mode": "background"})
+    check("Alt+F4 via window/post -> 403", s == 403, f"{s} {r.get('error', '')[:50]}")
+    s, r = post("/api/window/post", {"hwnd": target["hwnd"], "action": "key",
+                                     "key": "win", "mode": "background"})
+    check("Win key via window/post -> 403", s == 403, f"{s} {r.get('error', '')[:50]}")
+
+
+# --- 10) Resource limits (SC-05) ---
+
+print("\n== Resource Limits (SC-05) ==")
+s, r = post("/api/key", {"action": "type", "text": "x" * 20000})
+check("Oversized text -> 400", s == 400, str(s))
+
+req = urllib.request.Request(
+    BASE + "/api/vision/frame?scale=50",
+    headers={"X-Auth-Token": TOKEN})
+try:
+    urllib.request.urlopen(req, timeout=15)
+    check("Huge scale -> 400", False, "no error raised")
+except urllib.error.HTTPError as e:
+    check("Huge scale -> 400", e.code == 400, str(e.code))
+
+req = urllib.request.Request(
+    BASE + "/api/screenshot?region=0,0,999999,999999",
+    headers={"X-Auth-Token": TOKEN})
+try:
+    urllib.request.urlopen(req, timeout=15)
+    check("Huge region -> 400", False, "no error raised")
+except urllib.error.HTTPError as e:
+    check("Huge region -> 400", e.code == 400, str(e.code))
 
 
 # --- Summary ---

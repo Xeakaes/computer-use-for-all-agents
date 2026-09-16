@@ -767,11 +767,14 @@ python mcp_server.py --http --port 8751
 ```
 
 The HTTP transport is **token-protected**: every request must carry the
-`X-Auth-Token` header (same token as the REST server) or `?token=...` as a
-fallback for clients that cannot send custom headers. Only `GET /health` is
-open, for liveness probes. DNS-rebinding protection is disabled on this
-transport deliberately — tunneled requests arrive with a foreign `Host`
-header, and the rebinding threat is already covered by the token guard.
+`X-Auth-Token` header (same token as the REST server). Query-string tokens
+(`?token=...`) are **rejected by design** — URLs leak into proxy/tunnel
+logs, browser history and shared links, and this token grants full desktop
+control. Clients that cannot send custom headers should run a local stdio
+`mcp_server.py` instead. Only `GET /health` is open, for liveness probes.
+DNS-rebinding protection is disabled on this transport deliberately —
+tunneled requests arrive with a foreign `Host` header, and the rebinding
+threat is already covered by the token guard.
 
 For a cloud agent, expose it through a tunnel:
 
@@ -781,8 +784,9 @@ cloudflared tunnel --url http://127.0.0.1:8751
 ```
 
 Then configure the agent's MCP connection with `<tunnel-url>/mcp` plus the
-token from `.token` as a header (`X-Auth-Token`) — or `?token=...` in the
-URL if the connector cannot send headers.
+token from `.token` as a header (`X-Auth-Token`). If the connector cannot
+send custom headers, do not fall back to a query-string token — run a local
+stdio `mcp_server.py` instead.
 
 > ⚠️ A tunnel exposes PC control to the internet. Keep the token secret,
 > prefer short-lived tunnels, and stop the server when not in use.
@@ -857,6 +861,12 @@ cannot read this token (Same-Origin Policy), so it cannot authenticate.
 Additional layers:
 - POST requests **must** use `Content-Type: application/json` (415 otherwise)
 - This blocks form-encoded and text-plain POSTs even if the token leaked
+- **Host header trust (DNS rebinding):** when bound to loopback, requests
+  carrying a non-loopback `Host` header are refused with `421` — a
+  rebinding page that resolves its domain to `127.0.0.1` cannot read
+  `/token` or call the API
+- `/token` and `/` responses carry `Cache-Control: no-store` so the
+  credential is never persisted by browsers or proxies
 
 ### Threat: Stuck Keys / Game Mode Lock
 
@@ -872,12 +882,20 @@ pyautogui failsafe (cursor to top-left) **does not work**.
 
 ### Threat: Wrong Window Typing
 
-**Mitigation:** `expect_hwnd` guard on `/api/key` — if the foreground window
-doesn't match, typing is refused with 409.
+**Mitigations:**
+- `expect_hwnd` guard on `/api/key` — if the foreground window doesn't
+  match, typing is refused with 409
+- The focused path of `/api/window/post` verifies the focus **after** the
+  focus switch and **before** any synthetic input (409 on mismatch) —
+  input is never replayed into whatever window happens to be foreground
+- `focus_window()` raises on failure instead of silently returning
 
 ### Threat: Dangerous Key Combos
 
-**Mitigation:** Blocked at the API level (403):
+**Mitigation:** Blocked at the API level (403) on **every delivery path** —
+the direct `/api/key` route, the background `/api/window/post` route
+(PostMessage), and the focused fallback route share one safety policy
+(`control._assert_allowed`):
 - `Alt+F4` — the only banned Alt combo (Alt+Tab, Alt+menu are legitimate)
 - Win key — prevents Start menu, task switching
 - `Ctrl+Alt+Del` — system security screen
@@ -885,9 +903,27 @@ doesn't match, typing is refused with 409.
 
 ### Threat: Killing System Processes
 
-**Mitigation:** Critical system processes are blacklisted:
-`winlogon.exe`, `csrss.exe`, `smss.exe`, `services.exe`, `lsass.exe`,
-`svchost.exe`, `system`, `registry`, `dwm.exe`
+**Mitigations:**
+- The process name is resolved **from the PID directly** (Win32 toolhelp
+  snapshot), not from the visible-window inventory — windowless/background
+  system processes get the same protection as visible ones
+- Critical system processes are blacklisted (default-deny for unknown PIDs):
+  `winlogon.exe`, `csrss.exe`, `smss.exe`, `services.exe`, `lsass.exe`,
+  `svchost.exe`, `system`, `registry`, `dwm.exe`
+- Optional `expect_process` confirmation: a mismatch aborts the kill with
+  `409` — protects against killing a newly-reused PID
+
+### Threat: Resource Exhaustion (rogue agent / DoS)
+
+A token-holding but misbehaving client should not be able to exhaust memory
+or starve the input lock.
+
+**Mitigations:**
+- `MAX_CONTENT_LENGTH` = 1 MB — oversized request bodies are rejected (413)
+- `region` width/height/area and `scale` are bounded (400 otherwise)
+- `text` payloads are capped at 10,000 characters per input call
+- MJPEG streams are capped at 10 concurrent clients (429 beyond that)
+- Pillow decompression-bomb limit is set for client-supplied images
 
 ### Network Access
 

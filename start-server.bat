@@ -131,16 +131,14 @@ if defined PUBLIC_URL (
     echo   Endpoint : ^(tunnel not running - restart this script^)
 )
 echo   Header   : X-Auth-Token: !TOKEN!
-echo   Auth     : X-Auth-Token required  ^(401 otherwise^)
-if defined PUBLIC_URL (
-    echo   URL form : !PUBLIC_URL!/mcp?token=!TOKEN!
-    echo              ^(only if the connector cannot send headers^)
-)
+echo   Auth     : X-Auth-Token header required  ^(401 otherwise^)
+echo   Note     : header-only auth; tokens in URLs leak into logs/history
 echo   ------------------------------------------------------------
 echo.
 echo   Quick test from anywhere:
 if defined PUBLIC_URL (
     echo     curl "!PUBLIC_URL!/health"
+    echo     curl -H "X-Auth-Token: !TOKEN!" "!PUBLIC_URL!/mcp"
 ) else (
     echo     curl http://127.0.0.1:8751/health
 )

@@ -375,19 +375,17 @@ def _run_http(port: int) -> None:
             return
         headers = {k.decode("latin-1").lower(): v.decode("latin-1")
                    for k, v in scope.get("headers", [])}
-        # Header is the primary path; ?token= query is a fallback for MCP
-        # clients that cannot send custom headers (e.g. Claude web custom
-        # connectors). Note: query tokens can appear in server logs — prefer
-        # the header wherever the client supports it.
-        from urllib.parse import parse_qs
-        raw_qs = scope.get("query_string", b"")  # bytes, e.g. b"token=abc"
-        qs = parse_qs(raw_qs.decode("latin-1"))
-        supplied = headers.get("x-auth-token") or qs.get("token", [None])[0]
+        # SC-06: header-only authentication. A ?token= query fallback was
+        # removed deliberately — query strings persist in proxy/tunnel logs,
+        # browser history and shared URLs, and this token grants full desktop
+        # control. Clients that cannot send custom headers must use a wrapper
+        # (e.g. a local stdio mcp_server.py proxying to this endpoint).
+        supplied = headers.get("x-auth-token")
         if supplied != expected:
             await _send_json(send, 401,
                              {"ok": False,
                               "error": "unauthorized: missing or invalid "
-                                       "X-Auth-Token header (or ?token= query)"})
+                                       "X-Auth-Token header"})
             return
         await inner(scope, receive, send)
 
