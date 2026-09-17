@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.xeakaes/computer-use-for-all-agents",
+  "name": "io.github.Xeakaes/computer-use-for-all-agents",
   "description": "Safety-gated computer use for AI agents: screen OCR and vision, mouse, keyboard, window control.",
   "title": "Screen Control",
   "websiteUrl": "https://github.com/Xeakaes/computer-use-for-all-agents",
