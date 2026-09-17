@@ -180,9 +180,12 @@ def create_backend(backend_name: "str | None" = None) -> PlatformBackend:
         from backends.linux import LinuxBackend as backend_cls
     elif name == "macos":
         from backends.macos import MacOSBackend as backend_cls
+    elif name == "fake":
+        # In-memory backend for CI / tests / safe experimentation.
+        from backends.fake import FakeBackend as backend_cls
     else:
         raise ValueError(f"unknown backend: {name!r} "
-                         f"(known: 'windows', 'linux', 'macos')")
+                         f"(known: 'windows', 'linux', 'macos', 'fake')")
     return backend_cls()
 
 
