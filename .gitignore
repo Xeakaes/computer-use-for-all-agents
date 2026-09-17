@@ -15,8 +15,10 @@ __pycache__/
 *.pyo
 
 # Test/debug artifacts
+# (__init__.py exception: package markers are real code, not scratch files)
 _*.json
 _*.py
+!__init__.py
 _frames/
 *.jpg
 *.png
