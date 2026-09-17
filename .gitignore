@@ -28,6 +28,15 @@ f2.jpg
 hotbar.png
 w.png
 
+# Local session notes (agent handoff) and plan workspace
+HANDOFF.md
+docs/superpowers/
+
+# Local agent tooling (installed via `npx skills add`, not part of the project)
+.agents/
+.claude/
+skills-lock.json
+
 # IDE / OS
 .vscode/
 .idea/
