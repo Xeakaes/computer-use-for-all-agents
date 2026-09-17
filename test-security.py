@@ -212,10 +212,14 @@ if windows:
     target = windows[0]
     s, r = post("/api/window/post", {"hwnd": target["hwnd"], "action": "hotkey",
                                      "keys": ["alt", "f4"], "mode": "background"})
-    check("Alt+F4 via window/post -> 403", s == 403, f"{s} {r.get('error', '')[:50]}")
+    err = r.get("error", "")
+    err = err.get("message", "") if isinstance(err, dict) else err
+    check("Alt+F4 via window/post -> 403", s == 403, f"{s} {str(err)[:50]}")
     s, r = post("/api/window/post", {"hwnd": target["hwnd"], "action": "key",
                                      "key": "win", "mode": "background"})
-    check("Win key via window/post -> 403", s == 403, f"{s} {r.get('error', '')[:50]}")
+    err = r.get("error", "")
+    err = err.get("message", "") if isinstance(err, dict) else err
+    check("Win key via window/post -> 403", s == 403, f"{s} {str(err)[:50]}")
 
 
 # --- 10) Resource limits (SC-05) ---
