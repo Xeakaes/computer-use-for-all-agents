@@ -1,0 +1,76 @@
+# Publishes Screen Control to the official MCP Registry
+# (https://registry.modelcontextprotocol.io) when a version tag (v*) is
+# pushed. Can also be run manually from the Actions tab to re-publish the
+# version already stamped in server.json.
+#
+# Auth: GitHub OIDC — no secrets required. The registry grants the
+# io.github.Xeakaes/* namespace because the job runs inside that account's
+# repository with id-token: write.
+#
+# Idempotency: if the target version already exists in the registry, the
+# job exits successfully without re-publishing (the registry rejects
+# duplicate version publishes).
+name: Publish to MCP Registry
+
+on:
+  push:
+    tags: [ "v*" ]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # Required for OIDC authentication with the registry
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Determine version from tag (or server.json for manual runs)
+        id: version
+        run: |
+          REF_NAME="${GITHUB_REF_NAME}"
+          if [[ "$REF_NAME" == v* ]]; then
+            VERSION="${REF_NAME#v}"
+            jq --arg v "$VERSION" '.version = $v' server.json > server.json.tmp \
+              && mv server.json.tmp server.json
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "Publishing tag $REF_NAME as version $VERSION"
+          else
+            VERSION=$(jq -r '.version' server.json)
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "Manual run: publishing version $VERSION from server.json"
+          fi
+
+      - name: Skip if version already published
+        id: check
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          NAME="io.github.Xeakaes%2Fcomputer-use-for-all-agents"
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://registry.modelcontextprotocol.io/v0.1/servers/${NAME}/versions/${VERSION}")
+          echo "Registry returned HTTP $CODE for version $VERSION"
+          if [ "$CODE" = "200" ]; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "Already published: version $VERSION is in the registry; nothing to do."
+          elif [ "$CODE" = "404" ]; then
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unexpected registry response (HTTP $CODE) for version $VERSION"
+            exit 1
+          fi
+
+      - name: Install mcp-publisher
+        if: steps.check.outputs.already != 'true'
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry
+        if: steps.check.outputs.already != 'true'
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server to MCP Registry
+        if: steps.check.outputs.already != 'true'
+        run: ./mcp-publisher publish
