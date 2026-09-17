@@ -35,7 +35,28 @@ import importlib.util
 
 from flask import Flask, Response, jsonify, request
 
-import control
+from core.backends import get_backend
+from core.errors import ApiError, focus_mismatch, invalid_target, window_not_found
+
+_backend = get_backend()
+
+
+def _b():
+    """Current backend (module global so tests can swap it)."""
+    return _backend
+
+
+def _handle_error(exc):
+    """Serialize an ApiError into the standardized error envelope."""
+    return jsonify(exc.to_dict()), exc.status
+
+
+def _input_blocked(exc):
+    """Forbidden-input failures (PermissionError) as an INPUT_BLOCKED envelope."""
+    return jsonify({"ok": False,
+                    "error": {"code": "INPUT_BLOCKED", "message": str(exc),
+                              "platform": None, "action": None,
+                              "remediation": None}}), 403
 
 app = Flask(__name__)
 
@@ -310,17 +331,17 @@ def _watchdog_check() -> dict | None:
         timeout = (HOLD_TIMEOUT_GAME if _wd_state["timeout_mode"] == "game"
                    else HOLD_TIMEOUT_NORMAL)
     try:
-        held = control.held_state()
-        game_on = control._game_active()
+        held = _b().held_state()
+        game_on = _b().game_active()
     except Exception:
         return None
     if (held["keys"] or held["buttons"] or game_on) and idle > timeout:
         # Serialise with live input requests: releasing keys while an input
         # request is mid-flight would leave the tracked set torn.
         with _input_lock:
-            released = control.release_all()
+            released = _b().release_all()
             if game_on:
-                control.game_stop()
+                _b().game_stop()
         with _wd_lock:
             _wd_state["count"] += 1
             _wd_state["last_watchdog"] = {"at": time.time(), "idle": round(idle, 1),
@@ -502,26 +523,38 @@ def api_keys_manage():
 @app.get("/api/info")
 def info():
     with _read_lock:
-        w, h = control.screen_size()
-        monitors = control.list_monitors()
+        w, h = _b().screen_size()
+        monitors = _b().list_monitors()
+    caps = _b().get_capabilities()
     return jsonify({
         "ok": True,
         "width": w,
         "height": h,
         "monitors": monitors,
         "monitor_count": len(monitors),
-        "platform": control.get_platform(),
+        "backend": caps.get("platform"),
+        "platform": caps.get("platform"),
         "ocr_available": _ocr_available(),
         "failsafe": True,
-        "game_mode": control._game_active(),
+        "game_mode": _b().game_active(),
     })
+
+
+@app.get("/api/capabilities")
+def capabilities():
+    """Active backend + what it can do. Agents should call this first."""
+    caps = dict(_b().get_capabilities())  # copy: never mutate the backend's dict
+    backend_name = caps.pop("platform", None)
+    caps.setdefault("platform", backend_name)  # keep platform inside capabilities
+    return jsonify({"ok": True, "backend": backend_name,
+                    "capabilities": caps})
 
 
 @app.get("/api/monitors")
 def monitors():
     """List all available monitors."""
     with _read_lock:
-        monitors = control.list_monitors()
+        monitors = _b().list_monitors()
     return jsonify({"ok": True, "monitors": monitors, "count": len(monitors)})
 
 
@@ -533,7 +566,7 @@ def screenshot():
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     with _read_lock:
-        data = control.screenshot_jpeg(monitor, region)
+        data = _b().screenshot_jpeg(monitor, region)
     return Response(data, mimetype="image/jpeg")
 
 
@@ -611,7 +644,7 @@ def vision_frame():
     quality = min(95, max(20, request.args.get("quality", 80, type=int)))
     as_b64 = request.args.get("format") == "base64"
     with _read_lock:
-        img = control.screenshot_scaled(monitor, region, scale=scale, grayscale=bool(gray))
+        img = _b().screenshot_scaled(monitor, region, scale=scale, grayscale=bool(gray))
     import io as _io
     import base64 as _b64
     buf = _io.BytesIO()
@@ -647,7 +680,7 @@ def stream():
             while True:
                 t0 = time.time()
                 with _read_lock:
-                    img = control.screenshot_scaled(1, region, scale=scale)
+                    img = _b().screenshot_scaled(1, region, scale=scale)
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG", quality=quality)
                 yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
@@ -687,13 +720,13 @@ def vision_diff():
                 return jsonify({"ok": False, "error": f"b64_prev decode failed: {exc}"}), 400
         else:
             prev = _last_gray["img"]
-        cur = control.screenshot(1, region).convert("L")
+        cur = _b().screenshot(1, region).convert("L")
         if body.get("grab") == "gray" or prev is None:
             _last_gray["img"] = cur
     if prev is None:
         return jsonify({"ok": True, "changed": False,
                         "note": "first frame stored; next call will return diff"})
-    return jsonify({"ok": True, **control.frame_diff(prev, cur)})
+    return jsonify({"ok": True, **_b().frame_diff(prev, cur)})
 
 
 @app.post("/api/mouse")
@@ -705,29 +738,29 @@ def mouse():
     try:
         with _input_lock:
             if action == "move":
-                control.mouse_move(int(x), int(y))
+                _b().mouse_move(int(x), int(y))
             elif action == "click":
-                control.mouse_click(
+                _b().mouse_click(
                     int(x) if x is not None else None,
                     int(y) if y is not None else None,
                     body.get("button", "left"),
                     int(body.get("clicks", 1)),
                 )
             elif action == "scroll":
-                control.mouse_scroll(int(body.get("clicks", 0)),
+                _b().mouse_scroll(int(body.get("clicks", 0)),
                                      int(x) if x is not None else None,
                                      int(y) if y is not None else None)
             elif action == "drag":
-                control.mouse_drag(
+                _b().mouse_drag(
                     int(body.get("x1", 0)), int(body.get("y1", 0)),
                     int(x), int(y),
                     float(body.get("duration", 0.3)),
                     body.get("button", "left"),
                 )
             elif action == "down":
-                control.mouse_down(body.get("button", "left"))
+                _b().mouse_down(body.get("button", "left"))
             elif action == "up":
-                control.mouse_up(body.get("button", "left"))
+                _b().mouse_up(body.get("button", "left"))
             else:
                 return jsonify({"ok": False, "error": f"unknown action: {action}"}), 400
     except Exception as exc:
@@ -749,9 +782,9 @@ def key():
             # matches — refuse to type into the wrong window.
             expect_hwnd = body.get("expect_hwnd")
             if expect_hwnd is not None and action in ("press", "hotkey", "type", "down"):
-                fg = control._user32.GetForegroundWindow()
+                fg = (_b().get_focused_window() or {}).get("hwnd")
                 if fg != int(expect_hwnd):
-                    fg_win = next((w for w in control.list_windows()
+                    fg_win = next((w for w in _b().list_windows()
                                    if w["hwnd"] == fg), None)
                     fg_name = fg_win["process"] if fg_win else "?"
                     return jsonify({"ok": False,
@@ -759,19 +792,23 @@ def key():
                                              f"{fg_name} — typing to the wrong "
                                              f"window has been blocked"}), 409
             if action == "press":
-                control.key_press(body["key"])
+                _b().key_press(body["key"])
             elif action == "hotkey":
-                control.key_hotkey(*body.get("keys", []))
+                _b().key_hotkey(*body.get("keys", []))
             elif action == "type":
-                control.type_text(_validated_text(body), float(body.get("interval", 0.03)))
+                _b().type_text(_validated_text(body), float(body.get("interval", 0.03)))
             elif action == "down":
-                control.key_down(body["key"])
+                _b().key_down(body["key"])
             elif action == "up":
-                control.key_up(body["key"])
+                _b().key_up(body["key"])
             else:
-                return jsonify({"ok": False, "error": f"unknown action: {action}"}), 400
+                return _handle_error(ApiError("INVALID_TARGET",
+                                              f"unknown action: {action}",
+                                              status=400))
+    except ApiError as exc:
+        return _handle_error(exc)
     except PermissionError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 403
+        return _input_blocked(exc)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
@@ -782,8 +819,8 @@ def key():
 @app.get("/api/held")
 def held():
     """Currently held keys/buttons + watchdog status."""
-    st = control.held_state()
-    st["game_mode"] = control._game_active()
+    st = _b().held_state()
+    st["game_mode"] = _b().game_active()
     with _wd_lock:
         st["idle_seconds"] = round(time.time() - _wd_state["last_activity"], 1)
         st["watchdog_count"] = _wd_state["count"]
@@ -795,9 +832,9 @@ def held():
 def release_all_ep():
     """Emergency: release ALL held keys/buttons + lift game-mode cursor lock."""
     with _input_lock:
-        res = control.release_all()
-        if control._game_active():
-            control.game_stop()
+        res = _b().release_all()
+        if _b().game_active():
+            _b().game_stop()
             res["game_stopped"] = True
     return jsonify(res)
 
@@ -808,7 +845,7 @@ def ocr():
     body = request.get_json(force=True, silent=True) or {}
     region = body.get("region")
     with _read_lock:
-        img = control.screenshot(region=tuple(region) if region else None)
+        img = _b().screenshot(region=tuple(region) if region else None)
     engine = get_ocr_engine()
     if engine is None:
         msg = ("OCR engine not installed. Install: python -m pip install rapidocr-onnxruntime"
@@ -852,7 +889,7 @@ def _com_init():
 @app.get("/api/windows")
 def windows():
     with _read_lock:
-        wins = control.list_windows()
+        wins = _b().list_windows()
     # Annotate which virtual desktop each window is on (silent if pyvda fails)
     try:
         _com_init()
@@ -876,25 +913,37 @@ def window_op():
     try:
         with _input_lock:
             if action == "focus":
-                control.focus_window(int(hwnd))
+                _b().focus_window(int(hwnd))
             elif action == "maximize":
-                control._user32.ShowWindow(int(hwnd), 3)  # SW_MAXIMIZE
+                _b().maximize_window(int(hwnd))
                 time.sleep(0.3)
             elif action == "close":
                 if hwnd is None:
                     return jsonify({"ok": False,
                                     "error": "hwnd required; no blind Alt+F4"}), 400
-                res = control.close_window_safely(
+                # Optional focus guard: refuse unless the target really is the
+                # foreground window (SC-04 parity, standardized envelope).
+                if body.get("expect_focus"):
+                    fg = (_b().get_focused_window() or {}).get("hwnd")
+                    if fg != int(hwnd):
+                        return _handle_error(focus_mismatch(f"hwnd={hwnd}",
+                                                             f"hwnd={fg}"))
+                res = _b().close_window(
                     int(hwnd),
                     expect_title=body.get("expect_title"),
                     expect_process=body.get("expect_process"))
                 # A refused close (title/process mismatch) is a client error:
-                # report it as 409 Conflict, not a silent 200.
+                # report it as 409 Conflict, not a silent 200. An unknown hwnd
+                # gets the standardized WINDOW_NOT_FOUND envelope (404).
                 if not res.get("ok"):
+                    known = any(w["hwnd"] == int(hwnd)
+                                for w in _b().list_windows())
+                    if not known:
+                        return _handle_error(window_not_found(f"hwnd={hwnd}"))
                     return jsonify(res), 409
                 return jsonify(res)
             elif action in ("topmost", "untopmost"):
-                control._set_topmost(int(hwnd), action == "topmost")
+                _b().set_topmost(int(hwnd), action == "topmost")
             elif action == "kill":
                 pid = int(body.get("pid", 0))
                 if pid in (0, 4):
@@ -904,7 +953,7 @@ def window_op():
                 # SC-03: resolve the process name from the PID directly — not
                 # from the visible-window inventory. A windowless (background/
                 # headless) process previously bypassed the deny-list entirely.
-                proc_name = control.process_name(pid)
+                proc_name = _b().process_name(pid)
                 if proc_name is None:
                     # Default-deny: a PID we cannot resolve may be a protected
                     # system process with a restricted query — refuse it.
@@ -922,9 +971,13 @@ def window_op():
                     return jsonify({"ok": False,
                                     "error": f"process mismatch: expected "
                                              f"'{expect_proc}', got '{name}'"}), 409
-                return jsonify(control.kill_process(pid))
+                return jsonify(_b().kill_process(pid))
             else:
                 return jsonify({"ok": False, "error": f"unknown action: {action}"}), 400
+    except ApiError as exc:
+        return _handle_error(exc)
+    except PermissionError as exc:
+        return _input_blocked(exc)
     except (ValueError, RuntimeError) as exc:
         return jsonify({"ok": False, "error": str(exc)}), 409
     except Exception as exc:
@@ -953,7 +1006,7 @@ def window_capture():
         # Capture under the read lock; OCR inference runs OUTSIDE it so a slow
         # full-window OCR does not stall other readers (image-only requests).
         with _read_lock:
-            img = control.capture_window(hwnd, client_only=bool(client))
+            img = _b().capture_window(hwnd, client_only=bool(client))
             if not want_ocr:
                 import io as _io
                 buf = _io.BytesIO()
@@ -990,7 +1043,7 @@ def window_post():
         {"hwnd":123, "action":"hotkey", "keys":["ctrl","s"]}
         {"hwnd":123, "action":"click", "x":50, "y":30}
         {"hwnd":123, "action":"scroll", "clicks":-3}
-    Routing (mode=auto, decided by control.probe_input_mode):
+    Routing (mode=auto, decided by the backend's probe_input_mode):
       - "postmessage" -> classic Win32 app: background PostMessage path
                          (window keeps its current z-order/focus).
       - "uia"         -> WinUI/UWP/XAML surface: a single DirectX canvas with no
@@ -1009,7 +1062,7 @@ def window_post():
     mode = body.get("mode", "auto")
     try:
         hwnd = int(hwnd)
-        probe = control.probe_input_mode(hwnd)
+        probe = _b().probe_input_mode(hwnd)
         if probe == "invalid":
             return jsonify({"ok": False,
                             "error": "window not reachable (bad hwnd or no message queue)"}), 409
@@ -1023,9 +1076,9 @@ def window_post():
         # direct /api/key route. Enforced here in addition to the control-layer
         # guard inside window_key()/window_hotkey() (defense in depth).
         if action == "key" and body.get("key"):
-            control._assert_allowed([str(body["key"])])
+            _b().assert_allowed([str(body["key"])])
         if action == "hotkey" and body.get("keys"):
-            control._assert_allowed([str(k) for k in body["keys"]])
+            _b().assert_allowed([str(k) for k in body["keys"]])
 
         # Resource limit (SC-05): reject oversized text before taking the lock.
         if action == "type":
@@ -1038,25 +1091,27 @@ def window_post():
 
         with _input_lock:
             if action == "type":
-                return jsonify(control.window_type_text(hwnd, _validated_text(body)))
+                return jsonify(_b().window_type_text(hwnd, _validated_text(body)))
             if action == "key":
-                return jsonify(control.window_key(hwnd, body["key"]))
+                return jsonify(_b().window_key(hwnd, body["key"]))
             if action == "hotkey":
-                return jsonify(control.window_hotkey(hwnd, body.get("keys", [])))
+                return jsonify(_b().window_hotkey(hwnd, body.get("keys", [])))
             if action == "click":
-                return jsonify(control.window_click(
+                return jsonify(_b().window_click(
                     hwnd, int(body["x"]), int(body["y"]),
                     body.get("button", "left"), int(body.get("clicks", 1))))
             if action == "scroll":
-                return jsonify(control.window_scroll(hwnd, int(body.get("clicks", 0))))
+                return jsonify(_b().window_scroll(hwnd, int(body.get("clicks", 0))))
             if action == "drag":
-                return jsonify(control.window_drag(
+                return jsonify(_b().window_drag(
                     hwnd, int(body["x1"]), int(body["y1"]),
                     int(body["x"]), int(body["y"]), body.get("button", "left")))
             return jsonify({"ok": False, "error": f"unknown action: {action}"}), 400
+    except ApiError as exc:
+        return _handle_error(exc)
     except PermissionError as exc:
-        # Forbidden key combo on any delivery path (SC-02) -> same 403 as /api/key.
-        return jsonify({"ok": False, "error": str(exc)}), 403
+        # Forbidden key combo on any delivery path (SC-02) -> INPUT_BLOCKED.
+        return _input_blocked(exc)
     except RuntimeError as exc:
         # Focus verification failure (SC-04): the target window did not take
         # focus — a client--side conflict, not a server error.
@@ -1076,15 +1131,15 @@ def _focused_window_input(hwnd: int, action: str, body: dict) -> dict:
     (physical pixels — the process is Per-Monitor DPI aware).
     Raises ValueError/KeyError for unknown/missing parameters (-> HTTP 400).
     """
-    control.focus_window(hwnd)
+    _b().focus_window(hwnd)
     time.sleep(0.25)  # let the focus change settle before synthetic input
     # SC-04: verify the focus actually landed on the target BEFORE any
     # synthetic input. If Windows refused the focus switch or the user raced
     # the agent, SendInput would type into whatever IS foreground — the exact
     # scenario the safety model forbids. Refuse with 409 instead.
-    fg = control._user32.GetForegroundWindow() if control.IS_WINDOWS else None
+    fg = (_b().get_focused_window() or {}).get("hwnd")
     if fg != hwnd:
-        fg_win = next((w for w in control.list_windows()
+        fg_win = next((w for w in _b().list_windows()
                        if w["hwnd"] == fg), None)
         fg_name = fg_win["process"] if fg_win else "?"
         raise RuntimeError(
@@ -1092,27 +1147,27 @@ def _focused_window_input(hwnd: int, action: str, body: dict) -> dict:
             f"target window — input aborted to avoid typing into the wrong app")
     if action == "type":
         text = body.get("text", "")
-        control.type_text(text)
+        _b().type_text(text)
         return {"ok": True, "mode": "focused", "chars": len(text)}
     if action == "key":
-        control.key_press(body["key"])
+        _b().key_press(body["key"])
         return {"ok": True, "mode": "focused", "key": body["key"]}
     if action == "hotkey":
         keys = body.get("keys", [])
-        control.key_hotkey(*keys)
+        _b().key_hotkey(*keys)
         return {"ok": True, "mode": "focused", "keys": keys}
     if action == "click":
-        sx, sy = control.client_to_screen(hwnd, int(body["x"]), int(body["y"]))
-        control.mouse_click(sx, sy, body.get("button", "left"), int(body.get("clicks", 1)))
+        sx, sy = _b().client_to_screen(hwnd, int(body["x"]), int(body["y"]))
+        _b().mouse_click(sx, sy, body.get("button", "left"), int(body.get("clicks", 1)))
         return {"ok": True, "mode": "focused", "at": [sx, sy]}
     if action == "scroll":
-        sx, sy = control.client_to_screen(hwnd, int(body.get("x", 0)), int(body.get("y", 0)))
-        control.mouse_scroll(int(body.get("clicks", 0)), sx, sy)
+        sx, sy = _b().client_to_screen(hwnd, int(body.get("x", 0)), int(body.get("y", 0)))
+        _b().mouse_scroll(int(body.get("clicks", 0)), sx, sy)
         return {"ok": True, "mode": "focused", "clicks": int(body.get("clicks", 0))}
     if action == "drag":
-        x1, y1 = control.client_to_screen(hwnd, int(body["x1"]), int(body["y1"]))
-        x2, y2 = control.client_to_screen(hwnd, int(body["x"]), int(body["y"]))
-        control.mouse_drag(x1, y1, x2, y2, float(body.get("duration", 0.3)),
+        x1, y1 = _b().client_to_screen(hwnd, int(body["x1"]), int(body["y1"]))
+        x2, y2 = _b().client_to_screen(hwnd, int(body["x"]), int(body["y"]))
+        _b().mouse_drag(x1, y1, x2, y2, float(body.get("duration", 0.3)),
                            body.get("button", "left"))
         return {"ok": True, "mode": "focused", "from": [x1, y1], "to": [x2, y2]}
     raise ValueError(f"unknown action: {action}")
@@ -1127,7 +1182,7 @@ def window_input_mode():
     hwnd = request.args.get("hwnd", type=int)
     if hwnd is None:
         return jsonify({"ok": False, "error": "hwnd required"}), 400
-    return jsonify({"ok": True, "hwnd": hwnd, "mode": control.probe_input_mode(hwnd)})
+    return jsonify({"ok": True, "hwnd": hwnd, "mode": _b().probe_input_mode(hwnd)})
 
 
 @app.get("/api/window/children")
@@ -1137,7 +1192,7 @@ def window_children():
     if hwnd is None:
         return jsonify({"ok": False, "error": "hwnd required"}), 400
     with _read_lock:
-        return jsonify({"ok": True, "children": control.list_children(hwnd)})
+        return jsonify({"ok": True, "children": _b().list_children(hwnd)})
 
 
 @app.get("/api/desktops")
@@ -1201,17 +1256,21 @@ def game():
     try:
         with _lock:
             if action == "start":
-                return jsonify(control.game_start(int(body.get("sensitivity", 12))))
+                return jsonify(_b().game_start(int(body.get("sensitivity", 12))))
             if action == "move":
-                return jsonify(control.game_move(
+                return jsonify(_b().game_move(
                     int(body.get("dx", 0)), int(body.get("dy", 0)),
                     int(body.get("sensitivity", 12))))
             if action == "stop":
-                return jsonify(control.game_stop())
+                return jsonify(_b().game_stop())
             if action == "heartbeat":
                 # Keep-alive signal for long holds (feeds the watchdog)
-                return jsonify({"ok": True, "game_mode": control._game_active()})
+                return jsonify({"ok": True, "game_mode": _b().game_active()})
             return jsonify({"ok": False, "error": f"unknown action: {action}"}), 400
+    except ApiError as exc:
+        return _handle_error(exc)
+    except PermissionError as exc:
+        return _input_blocked(exc)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
