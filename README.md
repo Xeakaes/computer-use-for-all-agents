@@ -158,6 +158,11 @@ tasks.
 │  Virtual Desktops: pyvda                                 │
 │  Game Mode: ClipCursor + MOUSE_MOVE_RELATIVE             │
 └─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│              backends/ (pluggable)           │
+│  WindowsBackend  │ LinuxBackend │ MacOSBackend│
+│      (full)      │   (stub)     │   (stub)   │
+└──────────────────────────────────────────────┘
 ```
 
 ### Coordinates & Concurrency
@@ -245,6 +250,37 @@ curl -H "X-Auth-Token: $TOKEN" http://127.0.0.1:8745/api/screenshot -o screen.jp
 ---
 
 ## API Reference
+
+### Capabilities
+
+Returns the active backend name and what it can do. Agents should call this
+first (see [ROADMAP.md](ROADMAP.md) for the multi-platform plan).
+
+```http
+GET /api/capabilities
+→ {"ok": true, "backend": "windows",
+   "capabilities": {"screen_capture": true, "game_mode": true, ...}}
+```
+
+Feature values: `true` (supported), `false` (absent), `null` (unknown —
+stub backend), `"optional"` (depends on an optional dependency).
+
+### Platform Support Matrix
+
+| Capability | Windows | Linux X11 | Linux Wayland | macOS |
+|---|---:|---:|---:|---:|
+| Screen capture | Full | Full | Portal-dependent | Permission required |
+| OCR | Full/optional | Full/optional | Full/optional | Full/optional |
+| Mouse control | Full | Full | Restricted | Accessibility permission |
+| Keyboard control | Full | Full | Restricted | Accessibility permission |
+| Window enumeration | Full | WM-dependent | Limited | Accessibility/API-dependent |
+| Background input | Strong | WM/app-dependent | Usually unavailable | Limited |
+| Virtual desktops | Supported | DE/WM-dependent | DE/WM-dependent | Spaces-specific |
+| Game mode | Supported | Experimental | Limited | Experimental |
+
+> Linux and macOS backends are currently **fail-closed stubs**: every
+> operation returns `BACKEND_UNAVAILABLE` (501) until implemented
+> (ROADMAP Phases 5–7). Windows is the reference backend.
 
 ### Authentication
 
@@ -1137,7 +1173,17 @@ input — try `POST /api/window/post` with `action: "type"` instead.
 ```
 screen-control/
 ├── server.py            # Flask HTTP server + all API endpoints
-├── control.py           # Core: screen capture, mouse, keyboard, windows, game mode
+├── core/                # PlatformBackend interface + standardized errors
+│   ├── backends.py      # Abstract backend + lazy discovery
+│   └── errors.py        # ApiError envelope + error codes
+├── backends/            # OS implementations behind PlatformBackend
+│   ├── windows.py       # Reference backend (moved from control.py)
+│   ├── linux.py         # Fail-closed stub (ROADMAP Phase 5)
+│   ├── macos.py         # Fail-closed stub (ROADMAP Phase 7)
+│   ├── fake.py          # In-memory backend for tests
+│   └── forbidden.py     # Shared blocked-key policy
+├── control.py           # Compatibility shim re-exporting backends.windows
+├── tests/unit/          # Offline unit + integration tests (no real input)
 ├── mcp_server.py        # MCP server (stdio + streamable-HTTP) — thin wrapper over the API
 ├── sdk/
 │   └── screen_control.py  # Python SDK client (pip-installable style)

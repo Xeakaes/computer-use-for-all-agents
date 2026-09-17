@@ -733,6 +733,27 @@ of detail and token efficiency.
 
 ---
 
+## Capabilities and Errors
+
+Call `GET /api/capabilities` first. It reports the active backend and what
+it can do. Feature values: `true` (supported), `false` (absent),
+`null` (unknown — stub backend), `"optional"` (dependency-dependent).
+
+Errors use a stable envelope:
+
+```json
+{"ok": false, "error": {"code": "...", "message": "...",
+ "platform": "...", "action": "...", "remediation": "..."}}
+```
+
+Codes: `PERMISSION_REQUIRED`, `UNSUPPORTED_PLATFORM`,
+`UNSUPPORTED_DISPLAY_SERVER`, `BACKEND_UNAVAILABLE`, `WINDOW_NOT_FOUND`,
+`FOCUS_MISMATCH`, `CAPTURE_FAILED`, `INPUT_BLOCKED`, `INVALID_TARGET`,
+`RESOURCE_LIMIT`, `OPERATION_TIMEOUT`.
+
+Treat `BACKEND_UNAVAILABLE` as "stop trying this action on this machine" —
+never retry it.
+
 ## Error Handling
 
 | Code | Meaning | Action |
