@@ -3,13 +3,13 @@
 <p align="center">
   <img src="docs/images/logo.png" alt="screen-control logo" width="88" align="right">
 </p>
-[![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/xeakaes/computer-use-for-all-agents)
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue">
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-informational">
   <a href="https://github.com/features/actions"><img alt="CI: security tests" src="https://img.shields.io/badge/CI-security%20tests-brightgreen"></a>
   <a href="#mcp-support-one-click-cloud-agents"><img alt="MCP" src="https://img.shields.io/badge/MCP-compatible-9370DB"></a>
+  [![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/xeakaes/computer-use-for-all-agents)
 </p>
 
 > A local remote-control system for AI agents: watch your computer's screen
