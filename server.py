@@ -38,7 +38,13 @@ from flask import Flask, Response, jsonify, request
 from core.backends import get_backend
 from core.errors import ApiError, focus_mismatch, invalid_target, window_not_found
 
-_backend = get_backend()
+try:
+    _backend = get_backend()
+except ApiError as exc:
+    print(exc.message, file=sys.stderr)
+    if exc.remediation:
+        print(exc.remediation, file=sys.stderr)
+    raise SystemExit(2)
 
 
 def _b():

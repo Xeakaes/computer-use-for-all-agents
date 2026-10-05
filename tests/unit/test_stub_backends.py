@@ -1,15 +1,13 @@
-"""Stub backends must fail closed with BACKEND_UNAVAILABLE, never pretend."""
+"""macOS stub backend: fail closed with BACKEND_UNAVAILABLE, never pretend."""
 import unittest
 
-from backends.linux import LinuxBackend
 from backends.macos import MacOSBackend
 from core.errors import ApiError
 
 
 class TestStubBackends(unittest.TestCase):
     def test_every_action_raises_backend_unavailable(self):
-        for backend, platform_name in ((LinuxBackend(), "linux"),
-                                       (MacOSBackend(), "macos")):
+        for backend, platform_name in ((MacOSBackend(), "macos"),):
             with self.subTest(platform=platform_name):
                 caps = backend.get_capabilities()
                 self.assertEqual(caps["platform"], platform_name)
@@ -45,7 +43,7 @@ class TestStubBackends(unittest.TestCase):
                         self.assertEqual(ctx.exception.status, 501)
 
     def test_read_only_methods_fail_safe(self):
-        for backend in (LinuxBackend(), MacOSBackend()):
+        for backend in (MacOSBackend(),):
             with self.subTest(backend=type(backend).__name__):
                 self.assertEqual(backend.held_state(),
                                  {"keys": [], "buttons": []})
@@ -55,7 +53,7 @@ class TestStubBackends(unittest.TestCase):
                 self.assertEqual(backend.probe_input_mode(1), "invalid")
 
     def test_stub_keeps_forbidden_key_policy(self):
-        for backend in (LinuxBackend(), MacOSBackend()):
+        for backend in (MacOSBackend(),):
             with self.subTest(backend=type(backend).__name__):
                 self.assertIsNone(backend.assert_allowed(["a"]))
                 with self.assertRaises(PermissionError):
