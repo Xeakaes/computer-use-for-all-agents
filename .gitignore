@@ -13,6 +13,7 @@ logs/*.jsonl
 __pycache__/
 *.pyc
 *.pyo
+.venv/
 
 # Test/debug artifacts
 # (__init__.py exception: package markers are real code, not scratch files)
