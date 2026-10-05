@@ -90,6 +90,18 @@ KEYMAP = {
     "win": "Super_L",
     "home": "Home",
     "end": "End",
+    "f1": "F1",
+    "f2": "F2",
+    "f3": "F3",
+    "f4": "F4",
+    "f5": "F5",
+    "f6": "F6",
+    "f7": "F7",
+    "f8": "F8",
+    "f9": "F9",
+    "f10": "F10",
+    "f11": "F11",
+    "f12": "F12",
 }
 
 
@@ -128,8 +140,10 @@ def mouse_move(x: int, y: int, duration: float = 0.15) -> None:
     A no-op when the pointer is already at the target: a zero-delta
     `mousemove --sync` blocks ~15s on xdotool 3.20160805 waiting for a
     motion event that never comes, which exceeds run_x11's 5s budget.
-    The stepped loop stops one step short so the final --sync always
-    carries the remaining delta.
+    Floor rounding can land the stepped loop exactly on the target
+    before the last step (small negative deltas), so the final --sync
+    is skipped when the steps already reached it; every executed
+    --sync therefore carries a non-zero delta.
     """
     x0, y0 = _mouse_position()
     if (x0, y0) == (x, y):
@@ -148,7 +162,8 @@ def mouse_move(x: int, y: int, duration: float = 0.15) -> None:
                      str(target_x - prev_x), str(target_y - prev_y)])
         prev_x, prev_y = target_x, target_y
         time.sleep(delay)
-    run_x11(["xdotool", "mousemove", "--sync", str(x), str(y)])
+    if (prev_x, prev_y) != (x, y):
+        run_x11(["xdotool", "mousemove", "--sync", str(x), str(y)])
 
 
 def mouse_click(x, y, button: str = "left", clicks: int = 1) -> None:
@@ -234,7 +249,7 @@ def type_text(text: str, interval: float = 0.03) -> None:
         if index:
             run_x11(["xdotool", "key", "Return"])
         if segment:
-            run_x11(["xdotool", "type", "--clearmodifiers", "--delay",
+            run_x11(["xdotool", "type", "--delay",
                      str(delay_ms), "--", segment])
 
 

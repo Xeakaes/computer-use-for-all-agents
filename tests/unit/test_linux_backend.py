@@ -94,6 +94,8 @@ class TestLinuxInputUnit(unittest.TestCase):
         self.assertEqual(xdotool_key("up"), "Up")
         self.assertEqual(xdotool_key("a"), "a")
         self.assertEqual(xdotool_key("ctrl"), "ctrl")
+        for n in range(1, 13):
+            self.assertEqual(xdotool_key(f"f{n}"), f"F{n}")
 
     def test_runner_raises_operation_timeout_on_hang(self):
         with self.assertRaises(ApiError) as ctx:
@@ -160,6 +162,42 @@ class TestLinuxInputContracts(unittest.TestCase):
         self.assertEqual(self.calls(),
                          [["xdotool", "getmouselocation", "--shell"]])
 
+    def test_mouse_move_never_issues_zero_delta_sync(self):
+        proof_cases = [
+            ((100, 100), (99, 99), 0.15),
+            ((100, 100), (99, 99), 0.3),
+            ((105, 100), (104, 100), 0.15),
+            ((105, 100), (104, 100), 0.3),
+            ((100, 105), (100, 104), 0.15),
+            ((100, 105), (100, 104), 0.3),
+            ((500, 500), (495, 495), 0.15),
+            ((500, 500), (495, 495), 0.3),
+            ((100, 100), (101, 101), 0.15),
+            ((105, 100), (104, 101), 0.15),
+            ((100, 100), (500, 500), 0.15),
+            ((100, 100), (99, 99), 0),
+            ((100, 100), (100, 100), 0.15),
+        ]
+        for start, target, duration in proof_cases:
+            with self.subTest(start=start, target=target, duration=duration):
+                self.run.reset_mock()
+                self.run.return_value = (f"X={start[0]}\nY={start[1]}\n"
+                                         "SCREEN=0\nWINDOW=1\n")
+                mouse_move(target[0], target[1], duration=duration)
+                x, y = start
+                for c in self.calls():
+                    if c[1] == "mousemove_relative":
+                        x += int(c[4])
+                        y += int(c[5])
+                    elif c[1] == "mousemove":
+                        new_x, new_y = int(c[3]), int(c[4])
+                        self.assertNotEqual(
+                            (new_x - x, new_y - y), (0, 0),
+                            "zero-delta mousemove --sync blocks ~15s")
+                        x, y = new_x, new_y
+                self.assertEqual((x, y), target,
+                                 "pointer must end exactly at the target")
+
     def test_mouse_move_relative_negative_arguments(self):
         mouse_move_relative(-5, -7)
         self.run.assert_called_once_with(
@@ -219,11 +257,9 @@ class TestLinuxInputContracts(unittest.TestCase):
     def test_type_text_one_type_call_per_segment(self):
         type_text("a\nb")
         self.assertEqual(self.calls(), [
-            ["xdotool", "type", "--clearmodifiers", "--delay", "30",
-             "--", "a"],
+            ["xdotool", "type", "--delay", "30", "--", "a"],
             ["xdotool", "key", "Return"],
-            ["xdotool", "type", "--clearmodifiers", "--delay", "30",
-             "--", "b"],
+            ["xdotool", "type", "--delay", "30", "--", "b"],
         ])
 
     def test_held_tracking_and_release_all(self):
