@@ -13,6 +13,7 @@ echo
 # ---------------------------------------------------------------------
 # [1/5] Display server preflight
 # ---------------------------------------------------------------------
+echo "[1/5] Checking display server..."
 if [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || { [ -n "${WAYLAND_DISPLAY:-}" ] && [ "${XDG_SESSION_TYPE:-}" != "x11" ]; }; then
     echo "[ERROR] Wayland session detected - screen-control requires X11." >&2
     echo "        Log out, choose the 'Cinnamon (X11)' session at the login screen, then re-run." >&2
@@ -51,7 +52,9 @@ else
     echo "       game mode: UNAVAILABLE - no write access to /dev/uinput."
     echo "       Fix it with one of these (spec 5.4), then re-run this script:"
     echo "         sudo usermod -aG input \$USER   # then log out and back in"
-    echo "         echo 'KERNEL==\"uinput\", MODE=\"0660\", GROUP=\"input\"' | sudo tee /etc/udev/rules.d/99-uinput.rules"
+    cat <<'UDEV'
+         echo 'KERNEL=="uinput", MODE=="0660", GROUP=="input"' | sudo tee /etc/udev/rules.d/99-uinput.rules
+UDEV
 fi
 
 echo
