@@ -1,13 +1,16 @@
-"""Linux backend — X11 skeleton with fail-fast Wayland detection.
+"""Linux backend — X11 input via xdotool with fail-fast Wayland detection.
 
 Construction fails closed on Wayland (UNSUPPORTED_DISPLAY_SERVER); without
 X11 every action raises BACKEND_UNAVAILABLE while read-only getters stay
-safe. ROADMAP Phase 5 tasks 6-9 replace the stub bodies group by group
-(xdotool/wmctrl input, window management, mss capture, uinput game mode).
+safe. ROADMAP Phase 5 tasks 7-9 replace the remaining stub bodies group by
+group (wmctrl window management, mss capture, uinput game mode).
 """
 from __future__ import annotations
 
 import os
+import subprocess
+import threading
+import time
 
 from backends.forbidden import assert_forbidden
 from core.backends import PlatformBackend
@@ -44,6 +47,228 @@ def _unavailable(action: str) -> ApiError:
                     f"{action} is not implemented on the {_PLATFORM} backend",
                     status=501, platform=_PLATFORM, action=action,
                     remediation="not implemented on this backend yet")
+
+
+def run_x11(cmd: list[str], timeout: float = 5.0) -> str:
+    """Run an X11 helper (xdotool/wmctrl/...) and return its stdout."""
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout)
+    except FileNotFoundError:
+        raise ApiError("BACKEND_UNAVAILABLE",
+                       f"{cmd[0]} is not installed or not on PATH",
+                       status=501, platform=_PLATFORM,
+                       remediation="sudo apt install xdotool wmctrl")
+    except subprocess.TimeoutExpired:
+        raise ApiError("OPERATION_TIMEOUT",
+                       f"{cmd[0]} timed out after {timeout}s",
+                       status=504, platform=_PLATFORM, action=cmd[0])
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr)
+    return proc.stdout
+
+
+def type_segments(text: str) -> list[str]:
+    """Split text into segments typed separately (Return goes between)."""
+    return text.split("\n")
+
+
+KEYMAP = {
+    "enter": "Return",
+    "esc": "Escape",
+    "escape": "Escape",
+    "space": "space",
+    "tab": "Tab",
+    "pageup": "Page_Up",
+    "pagedown": "Page_Down",
+    "backspace": "BackSpace",
+    "delete": "Delete",
+    "up": "Up",
+    "down": "Down",
+    "left": "Left",
+    "right": "Right",
+    "win": "Super_L",
+    "home": "Home",
+    "end": "End",
+}
+
+
+def xdotool_key(name: str) -> str:
+    """Map an API key name to its xdotool keysym (pass-through fallback)."""
+    return KEYMAP.get(name.lower(), name)
+
+
+_BUTTON_CODES = {"left": "1", "middle": "2", "right": "3"}
+
+_held_lock = threading.Lock()
+_held_keys: dict[str, str] = {}
+_held_buttons: dict[str, str] = {}
+
+
+def _button_code(button: str) -> str:
+    try:
+        return _BUTTON_CODES[button]
+    except KeyError:
+        raise ValueError(f"unknown mouse button: {button!r}") from None
+
+
+def _mouse_position() -> tuple:
+    out = run_x11(["xdotool", "getmouselocation", "--shell"])
+    coords = {}
+    for line in out.splitlines():
+        if "=" in line:
+            key, _, value = line.partition("=")
+            coords[key] = value
+    return int(coords.get("X", 0)), int(coords.get("Y", 0))
+
+
+def mouse_move(x: int, y: int, duration: float = 0.15) -> None:
+    """Move to absolute (x, y), interpolating over <=20 steps.
+
+    A no-op when the pointer is already at the target: a zero-delta
+    `mousemove --sync` blocks ~15s on xdotool 3.20160805 waiting for a
+    motion event that never comes, which exceeds run_x11's 5s budget.
+    The stepped loop stops one step short so the final --sync always
+    carries the remaining delta.
+    """
+    x0, y0 = _mouse_position()
+    if (x0, y0) == (x, y):
+        return
+    if duration <= 0:
+        run_x11(["xdotool", "mousemove", "--sync", str(x), str(y)])
+        return
+    steps = min(20, max(1, int(duration * 100)))
+    delay = duration / steps
+    prev_x, prev_y = x0, y0
+    for step in range(1, steps):
+        target_x = x0 + (x - x0) * step // steps
+        target_y = y0 + (y - y0) * step // steps
+        if (target_x, target_y) != (prev_x, prev_y):
+            run_x11(["xdotool", "mousemove_relative", "--sync", "--",
+                     str(target_x - prev_x), str(target_y - prev_y)])
+        prev_x, prev_y = target_x, target_y
+        time.sleep(delay)
+    run_x11(["xdotool", "mousemove", "--sync", str(x), str(y)])
+
+
+def mouse_click(x, y, button: str = "left", clicks: int = 1) -> None:
+    """Move to (x, y) then click."""
+    mouse_move(x, y, duration=0)
+    if clicks >= 1:
+        run_x11(["xdotool", "click", "--repeat", str(clicks),
+                 _button_code(button)])
+
+
+def mouse_scroll(clicks: int, x=None, y=None) -> None:
+    """Scroll the wheel: positive = up (button 4), negative = down (5)."""
+    if not clicks:
+        return
+    if x is not None and y is not None:
+        mouse_move(x, y, duration=0)
+    button = "4" if clicks > 0 else "5"
+    run_x11(["xdotool", "click", "--repeat", str(abs(clicks)), button])
+
+
+def mouse_drag(x1: int, y1: int, x2: int, y2: int,
+               duration: float = 0.3, button: str = "left") -> None:
+    """Drag from (x1, y1) to (x2, y2) with the button held."""
+    mouse_move(x1, y1, duration=0)
+    mouse_down(button)
+    mouse_move(x2, y2, duration)
+    mouse_up(button)
+
+
+def mouse_move_relative(dx: int, dy: int) -> None:
+    """Relative pointer move (negative values need the '--' separator)."""
+    run_x11(["xdotool", "mousemove_relative", "--sync", "--",
+             str(dx), str(dy)])
+
+
+def mouse_down(button: str = "left") -> None:
+    """Press and hold a mouse button (tracked for release_all)."""
+    run_x11(["xdotool", "mousedown", _button_code(button)])
+    with _held_lock:
+        _held_buttons[button] = "x11"
+
+
+def mouse_up(button: str = "left") -> None:
+    """Release a held mouse button."""
+    run_x11(["xdotool", "mouseup", _button_code(button)])
+    with _held_lock:
+        _held_buttons.pop(button, None)
+
+
+def key_press(key: str) -> None:
+    """Press and release a single key."""
+    assert_forbidden([key])
+    run_x11(["xdotool", "key", xdotool_key(key)])
+
+
+def key_down(key: str) -> None:
+    """Hold a key down (tracked for release_all / watchdog)."""
+    assert_forbidden([key])
+    run_x11(["xdotool", "keydown", xdotool_key(key)])
+    with _held_lock:
+        _held_keys[key] = "x11"
+
+
+def key_up(key: str) -> None:
+    """Release a held key."""
+    assert_forbidden([key])
+    run_x11(["xdotool", "keyup", xdotool_key(key)])
+    with _held_lock:
+        _held_keys.pop(key, None)
+
+
+def key_hotkey(*keys: str) -> None:
+    """Press a chord in one xdotool call (e.g. key_hotkey('ctrl', 'c'))."""
+    assert_forbidden(list(keys))
+    chord = "+".join(xdotool_key(key) for key in keys)
+    run_x11(["xdotool", "key", chord])
+
+
+def type_text(text: str, interval: float = 0.03) -> None:
+    """Type text: one xdotool type per line segment, Return between."""
+    delay_ms = int(round(interval * 1000))
+    for index, segment in enumerate(type_segments(text)):
+        if index:
+            run_x11(["xdotool", "key", "Return"])
+        if segment:
+            run_x11(["xdotool", "type", "--clearmodifiers", "--delay",
+                     str(delay_ms), "--", segment])
+
+
+def held_state() -> dict:
+    """Snapshot of currently held keys/buttons (never raises)."""
+    with _held_lock:
+        return {"keys": sorted(_held_keys), "buttons": sorted(_held_buttons)}
+
+
+def release_all() -> dict:
+    """Release everything held, per recorded source (never raises)."""
+    with _held_lock:
+        keys = list(_held_keys.items())
+        buttons = list(_held_buttons.items())
+        _held_keys.clear()
+        _held_buttons.clear()
+    released = []
+    for name, source in keys:
+        try:
+            if source != "x11":
+                raise RuntimeError(f"unknown input source: {source}")
+            run_x11(["xdotool", "keyup", xdotool_key(name)])
+            released.append(name)
+        except Exception as exc:
+            released.append(f"{name} (release failed: {exc})")
+    for name, source in buttons:
+        try:
+            if source != "x11":
+                raise RuntimeError(f"unknown input source: {source}")
+            run_x11(["xdotool", "mouseup", _button_code(name)])
+            released.append(f"mouse:{name}")
+        except Exception as exc:
+            released.append(f"mouse:{name} (release failed: {exc})")
+    return {"ok": True, "released": released}
 
 
 class LinuxBackend(PlatformBackend):
@@ -104,32 +329,32 @@ class LinuxBackend(PlatformBackend):
     # mouse
     def mouse_move(self, x: int, y: int, duration: float = 0.15) -> None:
         self.require_x("mouse_move")
-        raise _unavailable("mouse_move")
+        mouse_move(x, y, duration)
 
     def mouse_click(self, x, y, button: str = "left", clicks: int = 1) -> None:
         self.require_x("mouse_click")
-        raise _unavailable("mouse_click")
+        mouse_click(x, y, button, clicks)
 
     def mouse_scroll(self, clicks: int, x=None, y=None) -> None:
         self.require_x("mouse_scroll")
-        raise _unavailable("mouse_scroll")
+        mouse_scroll(clicks, x, y)
 
     def mouse_drag(self, x1: int, y1: int, x2: int, y2: int,
                    duration: float = 0.3, button: str = "left") -> None:
         self.require_x("mouse_drag")
-        raise _unavailable("mouse_drag")
+        mouse_drag(x1, y1, x2, y2, duration, button)
 
     def mouse_move_relative(self, dx: int, dy: int) -> None:
         self.require_x("mouse_move_relative")
-        raise _unavailable("mouse_move_relative")
+        mouse_move_relative(dx, dy)
 
     def mouse_down(self, button: str = "left") -> None:
         self.require_x("mouse_down")
-        raise _unavailable("mouse_down")
+        mouse_down(button)
 
     def mouse_up(self, button: str = "left") -> None:
         self.require_x("mouse_up")
-        raise _unavailable("mouse_up")
+        mouse_up(button)
 
     # keyboard
     def assert_allowed(self, keys) -> None:
@@ -137,29 +362,26 @@ class LinuxBackend(PlatformBackend):
 
     def key_press(self, key: str) -> None:
         self.require_x("key_press")
-        raise _unavailable("key_press")
+        key_press(key)
 
     def key_down(self, key: str) -> None:
         self.require_x("key_down")
-        raise _unavailable("key_down")
+        key_down(key)
 
     def key_up(self, key: str) -> None:
         self.require_x("key_up")
-        raise _unavailable("key_up")
+        key_up(key)
 
     def key_hotkey(self, *keys: str) -> None:
         self.require_x("key_hotkey")
-        raise _unavailable("key_hotkey")
+        key_hotkey(*keys)
 
     def type_text(self, text: str, interval: float = 0.03) -> None:
         self.require_x("type_text")
-        raise _unavailable("type_text")
+        type_text(text, interval)
 
-    def held_state(self) -> dict:
-        return {"keys": [], "buttons": []}   # nothing held yet
-
-    def release_all(self) -> dict:
-        return {"ok": True, "released": []}
+    held_state = staticmethod(held_state)
+    release_all = staticmethod(release_all)
 
     # windows
     def list_windows(self) -> list:
