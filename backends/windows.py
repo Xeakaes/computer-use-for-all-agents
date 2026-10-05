@@ -848,18 +848,19 @@ PW_CLIENTONLY = 0x1
 PW_RENDERFULLCONTENT = 0x2
 
 
-class BITMAPINFOHEADER(ctypes.Structure):
-    _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
-                ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
-                ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
-                ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
-                ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
-                ("biClrImportant", wintypes.DWORD)]
+if IS_WINDOWS:
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG),
+                    ("biHeight", wintypes.LONG), ("biPlanes", wintypes.WORD),
+                    ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+                    ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
+                    ("biClrImportant", wintypes.DWORD)]
 
 
-class BITMAPINFO(ctypes.Structure):
-    _fields_ = [("bmiHeader", BITMAPINFOHEADER),
-                ("bmiColors", wintypes.DWORD * 3)]
+    class BITMAPINFO(ctypes.Structure):
+        _fields_ = [("bmiHeader", BITMAPINFOHEADER),
+                    ("bmiColors", wintypes.DWORD * 3)]
 
 
 def capture_window(hwnd: int, client_only: bool = False) -> Image.Image:
