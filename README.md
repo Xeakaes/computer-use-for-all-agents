@@ -27,6 +27,22 @@
 
 ---
 
+## If You Are an AI Agent
+
+> **Read [AGENT_GUIDE.md](AGENT_GUIDE.md) first** — it is written for you:
+> endpoints, safety gates and working recipes. This README is the human-facing
+> reference.
+
+First ask the server what it is — `GET /api/capabilities` → `platform`.
+**Windows:** follow the whole guide as written. **Linux:** check
+`echo $XDG_SESSION_TYPE` — X11 is supported (guide →
+[Linux (X11) Usage](AGENT_GUIDE.md#linux-x11-usage)); **Wayland is
+unsupported**: the server refuses to start, HTTP 501
+`UNSUPPORTED_DISPLAY_SERVER` (switch to an X11 session). Full routing lives
+in [AGENT_GUIDE.md → Find Your Environment First](AGENT_GUIDE.md#find-your-environment-first).
+
+---
+
 ## Why Screen Control?
 
 AI agents today can write code and call APIs — but they can't *see* or *touch*
@@ -71,6 +87,7 @@ tasks.
 
 ## Table of Contents
 
+- [If You Are an AI Agent](#if-you-are-an-ai-agent)
 - [Why Screen Control?](#why-screen-control)
 - [Features](#features)
 - [Architecture](#architecture)
