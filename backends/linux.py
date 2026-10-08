@@ -432,6 +432,50 @@ def parse_xwininfo_tree(text: str) -> list:
     return children
 
 
+_FULL_TREE_LINE = re.compile(
+    r'^\s+(?P<hwnd>0x[0-9a-fA-F]+)\s+(?:"[^"]*"|\(has no name\)):'
+    r'\s+\([^)]*\)\s+'
+    r'(?P<w>\d+)x(?P<h>\d+)'
+    r'(?:\+-?\d+|-\d+)(?:\+-?\d+|-\d+)\s+'
+    r'(?P<x>\+-?\d+|-\d+)(?P<y>\+-?\d+|-\d+)\s*$')
+
+
+def _xwininfo_coord(token: str) -> int:
+    """int() for one xwininfo coordinate token, `+N` or `+-N` (pure)."""
+    return int(token.replace("+-", "-"))
+
+
+def parse_xwininfo_full_tree(text: str) -> dict:
+    """Parse `xwininfo -root -tree` into bounds and parents (pure).
+
+    Each window line prints parent-relative geometry first and the
+    root-absolute pair second; the absolute pair becomes
+    `[left, top, right, bottom]`. Indentation carries the nesting: a
+    window's parent is the nearest preceding window line that is less
+    indented, so level-1 windows (root children) get parent None and the
+    root itself is never an entry. Header lines and malformed lines are
+    skipped; parsing never raises.
+    """
+    tree = {}
+    stack = []
+    for line in text.splitlines():
+        match = _FULL_TREE_LINE.match(line)
+        if not match:
+            continue
+        indent = len(line) - len(line.lstrip())
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        hwnd = int(match.group("hwnd"), 16)
+        x = _xwininfo_coord(match.group("x"))
+        y = _xwininfo_coord(match.group("y"))
+        width, height = int(match.group("w")), int(match.group("h"))
+        parent = stack[-1][1] if stack else None
+        tree[hwnd] = {"rect": [x, y, x + width, y + height],
+                      "parent": parent}
+        stack.append((indent, hwnd))
+    return tree
+
+
 def process_name(pid: int) -> "str | None":
     """Resolve a pid to its process name via /proc/<pid>/comm (None if gone)."""
     try:
@@ -758,18 +802,25 @@ class LinuxBackend(PlatformBackend):
             active = _active_window()
         except (ApiError, RuntimeError):
             active = None
+        tree = parse_xwininfo_full_tree(
+            run_x11(["xwininfo", "-root", "-tree"]))
         windows = []
         for line in lines:
             info = parse_wmctrl(line)
             if not info or not info["title"]:
                 continue
+            entry = tree.get(info["hwnd"])
+            if entry is None:
+                continue
+            parent = entry["parent"]
+            rect = entry["rect"] if parent is None else tree[parent]["rect"]
             windows.append({
                 "hwnd": info["hwnd"],
                 "title": info["title"],
                 "process": process_name(info["pid"]) or "?",
                 "pid": info["pid"],
                 "focused": active is not None and info["hwnd"] == active,
-                "rect": info["rect"],
+                "rect": rect,
             })
         return windows
 

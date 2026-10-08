@@ -636,6 +636,41 @@ class TestLinuxWindowParsers(unittest.TestCase):
             {"hwnd": 0x360002a, "class": "Xmessage", "title": "xmessage"},
         ])
 
+    # Real captured `xwininfo -root -tree` fragment: the header lines that
+    # must be skipped, a terminal reparented under Cinnamon's frame wrapper,
+    # a root-child desktop window, and a malformed line with no geometry.
+    XWININFO_FULL_TREE = (
+        'xwininfo: Window id: 0x637 (the root window) (has no name)\n'
+        '\n'
+        '  Root window id: 0x637 (the root window) (has no name)\n'
+        '  Parent window id: 0x0 (none)\n'
+        '     138 children:\n'
+        '     0x260012b (has no name): ()  1924x1044+-2+38  +-2+38\n'
+        '        1 child:\n'
+        '        0x4c00006 "OC | Implement Task 10: live acceptance su…": '
+        '("gnome-terminal-server" "Gnome-terminal")  1920x1008+2+34  +0+72\n'
+        '           1 child:\n'
+        '           0x4c00007 (has no name): ()  1x1+-1+-1  +-1+71\n'
+        '     0x2e0003e "Masaüstü": ("nemo-desktop" "Nemo-desktop")  '
+        '1920x1040+0+40  +0+40\n'
+        '        1 child:\n'
+        '        0x2e0003f (has no name): ()  1x1+-1+-1  +-1+39\n'
+        '     0x00a00001 (has no name): ()\n'
+    )
+
+    def test_parse_xwininfo_full_tree(self):
+        tree = linux_mod.parse_xwininfo_full_tree(self.XWININFO_FULL_TREE)
+        self.assertEqual(tree[0x260012b]["rect"], [-2, 38, 1922, 1082])
+        self.assertIsNone(tree[0x260012b]["parent"])
+        self.assertEqual(tree[0x4c00006]["rect"], [0, 72, 1920, 1080])
+        self.assertEqual(tree[0x4c00006]["parent"], 0x260012b)
+        self.assertEqual(tree[0x4c00007]["parent"], 0x4c00006)
+        self.assertEqual(tree[0x2e0003e]["rect"], [0, 40, 1920, 1080])
+        self.assertIsNone(tree[0x2e0003e]["parent"])
+        self.assertEqual(tree[0x2e0003f]["parent"], 0x2e0003e)
+        for skipped in (0x637, 0x00a00001):
+            self.assertNotIn(skipped, tree)
+
 
 class TestLinuxCloseSafety(unittest.TestCase):
     """close_window refuses before the mutating X call (brief Step 1)."""
@@ -787,6 +822,21 @@ class TestLinuxWindowContracts(unittest.TestCase):
             '        0x100002 "box": ("inst" "TextField")  80x20+4+4  '
             '+14+24\n'
         )
+        self.full_tree = (
+            'xwininfo: Window id: 0x637 (the root window) (has no name)\n'
+            '\n'
+            '  Root window id: 0x637 (the root window) (has no name)\n'
+            '  Parent window id: 0x0 (none)\n'
+            '     3 children:\n'
+            '     0x2000000 (has no name): ()  840x640+90+190  +90+190\n'
+            '        1 child:\n'
+            '        0x00001000 "Known Window": ("xmessage" "Xmessage")  '
+            '800x600+10+10  +100+200\n'
+            '     0x00003000 "Other": ("xmessage" "Xmessage")  '
+            '100x100+0+0  +5+6\n'
+            '        1 child:\n'
+            '        0x300001 (has no name): ()  1x1+-1+-1  +-1+-1\n'
+        )
         self.run.side_effect = self._router
         self.backend = LinuxBackend()
 
@@ -797,6 +847,8 @@ class TestLinuxWindowContracts(unittest.TestCase):
             return self.listing
         if cmd[:2] == ["wmctrl", "-ic", "0x1000"]:
             return ""
+        if cmd == ["xwininfo", "-root", "-tree"]:
+            return self.full_tree
         if cmd[0] == "xwininfo":
             return self.tree if "-tree" in cmd else self.geometry
         return ""
@@ -811,6 +863,7 @@ class TestLinuxWindowContracts(unittest.TestCase):
             "0x00002000 0 0 0 0 10 10 xmessage.Xmessage testhost \n"
             "not a window line at all\n"
             "0x00003000 0 4194305 5 6 7 8 xmessage.Xmessage testhost Other\n"
+            "0x00004000 0 7 50 60 70 80 xmessage.Xmessage testhost Gone\n"
         )
         wins = self.backend.list_windows()
         self.assertEqual(len(wins), 2)
@@ -818,14 +871,17 @@ class TestLinuxWindowContracts(unittest.TestCase):
         self.assertEqual(known, {
             "hwnd": 0x1000, "title": "Known Window",
             "process": linux_mod.process_name(42) or "?",
-            "pid": 42, "focused": True, "rect": [100, 200, 900, 800],
+            "pid": 42, "focused": True, "rect": [90, 190, 930, 830],
         })
         other = next(w for w in wins if w["hwnd"] == 0x3000)
         self.assertEqual(other["process"],
                          linux_mod.process_name(4194305) or "?")
         self.assertFalse(other["focused"])
+        self.assertEqual(other["rect"], [5, 6, 105, 106])
+        self.assertNotIn(0x4000, [w["hwnd"] for w in wins])
         self.assertEqual(self.calls()[0], ["wmctrl", "-lGpx"])
         self.assertEqual(self.calls()[1], ["xdotool", "getactivewindow"])
+        self.assertEqual(self.calls()[2], ["xwininfo", "-root", "-tree"])
 
     def test_get_focused_window_entry_or_none(self):
         got = self.backend.get_focused_window()
@@ -1097,6 +1153,23 @@ class TestLinuxLiveWindows(unittest.TestCase):
         self.assertEqual(got, before)
         self.assertEqual(self.backend.client_to_screen(found["hwnd"], 10, 20),
                          (before[0] + 10, before[1] + 20))
+
+    def test_list_windows_rect_contains_own_client_origin(self):
+        self._spawn("SC-rect-inside")
+        found = self._find("SC-rect-inside")
+        if found is None:
+            self.skipTest("xmessage window did not appear in the window list")
+        left, top, right, bottom = found["rect"]
+        cx, cy = self.backend.client_to_screen(found["hwnd"], 0, 0)
+        self.assertLessEqual(left, cx)
+        self.assertLess(cx, right)
+        self.assertLessEqual(top, cy)
+        self.assertLess(cy, bottom)
+        width, height = self.backend.screen_size()
+        self.assertLessEqual(right, width + 100)
+        self.assertLessEqual(bottom, height + 100)
+        self.assertGreater(right - left, 10)
+        self.assertGreater(bottom - top, 10)
 
 
 class TestLinuxCaptureContracts(unittest.TestCase):
