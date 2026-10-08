@@ -24,7 +24,7 @@ jobs:
           python-version: "3.12"
           cache: "pip"
       - name: Install dependencies
-        run: pip install flask pillow mss pyautogui
+        run: pip install flask pillow mss pyautogui numpy
       - name: Run unit tests (no server, no real input)
         env:
           SCREEN_CONTROL_BACKEND: fake

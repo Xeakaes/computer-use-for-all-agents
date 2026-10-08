@@ -10,6 +10,10 @@ class TestBackendImport(unittest.TestCase):
             self.fail("unguarded Windows-only symbol at import time")
         except ImportError as e:
             self.skipTest(f"optional platform dep missing: {e}")
+        except KeyError as e:
+            # pyautogui -> mouseinfo reads os.environ["DISPLAY"] on X11;
+            # headless runners have pyautogui but no display.
+            self.skipTest(f"environment cannot import pyautogui: {e}")
 
 
 if __name__ == "__main__":
