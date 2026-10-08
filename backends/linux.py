@@ -2,7 +2,8 @@
 
 Construction fails closed on Wayland (UNSUPPORTED_DISPLAY_SERVER); without
 X11 every action raises BACKEND_UNAVAILABLE while read-only getters stay
-safe. ROADMAP Phase 5 task 9 replaces the remaining game-mode stubs.
+safe. Game mode routes key/button input through a virtual uinput device
+while active.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from PIL import Image
 
 from backends import imageops
 from backends.forbidden import assert_forbidden
+from backends.uinput import UInputDevice
 from core.backends import PlatformBackend
 from core.errors import ApiError
 
@@ -46,13 +48,6 @@ def display_server() -> str:
     if session == "x11" or os.environ.get("DISPLAY"):
         return "x11"
     return "none"
-
-
-def _unavailable(action: str) -> ApiError:
-    return ApiError("BACKEND_UNAVAILABLE",
-                    f"{action} is not implemented on the {_PLATFORM} backend",
-                    status=501, platform=_PLATFORM, action=action,
-                    remediation="not implemented on this backend yet")
 
 
 def run_x11(cmd: list[str], timeout: float = 5.0) -> str:
@@ -121,6 +116,44 @@ _BUTTON_CODES = {"left": "1", "middle": "2", "right": "3"}
 _held_lock = threading.Lock()
 _held_keys: dict[str, str] = {}
 _held_buttons: dict[str, str] = {}
+
+# Game mode: while active, key/button events route through this virtual
+# device. Every send and lifecycle change happens under _game_lock so a
+# concurrent game_stop can never close the device mid-write.
+_game_lock = threading.Lock()
+_game_device: UInputDevice | None = None
+
+
+def _hold(name: str, source: str, table: dict) -> None:
+    """Record a held input tagged with the source that must release it."""
+    with _held_lock:
+        table[name] = source
+
+
+def _game_key(key: str, event: str) -> bool:
+    """Send key down/up/press through the game device; False when off."""
+    with _game_lock:
+        device = _game_device
+        if device is None:
+            return False
+        if event in ("down", "press"):
+            device.key_down(key)
+        if event in ("up", "press"):
+            device.key_up(key)
+        return True
+
+
+def _game_button(button: str, down: bool) -> bool:
+    """Send a button down/up through the game device; False when off."""
+    with _game_lock:
+        device = _game_device
+        if device is None:
+            return False
+        if down:
+            device.button_down(button)
+        else:
+            device.button_up(button)
+        return True
 
 
 def _button_code(button: str) -> str:
@@ -207,14 +240,19 @@ def mouse_move_relative(dx: int, dy: int) -> None:
 
 def mouse_down(button: str = "left") -> None:
     """Press and hold a mouse button (tracked for release_all)."""
-    run_x11(["xdotool", "mousedown", _button_code(button)])
-    with _held_lock:
-        _held_buttons[button] = "x11"
+    code = _button_code(button)
+    if _game_button(button, down=True):
+        _hold(button, "uinput", _held_buttons)
+        return
+    run_x11(["xdotool", "mousedown", code])
+    _hold(button, "x11", _held_buttons)
 
 
 def mouse_up(button: str = "left") -> None:
     """Release a held mouse button."""
-    run_x11(["xdotool", "mouseup", _button_code(button)])
+    code = _button_code(button)
+    if not _game_button(button, down=False):
+        run_x11(["xdotool", "mouseup", code])
     with _held_lock:
         _held_buttons.pop(button, None)
 
@@ -255,21 +293,26 @@ def _assert_single_allowed(key: str) -> None:
 def key_press(key: str) -> None:
     """Press and release a single key."""
     _assert_single_allowed(key)
-    run_x11(["xdotool", "key", xdotool_key(key)])
+    if not _game_key(key, "press"):
+        run_x11(["xdotool", "key", xdotool_key(key)])
 
 
 def key_down(key: str) -> None:
     """Hold a key down (tracked for release_all / watchdog)."""
     _assert_single_allowed(key)
-    run_x11(["xdotool", "keydown", xdotool_key(key)])
-    with _held_lock:
-        _held_keys[key] = "x11"
+    if _game_key(key, "down"):
+        source = "uinput"
+    else:
+        run_x11(["xdotool", "keydown", xdotool_key(key)])
+        source = "x11"
+    _hold(key, source, _held_keys)
 
 
 def key_up(key: str) -> None:
     """Release a held key."""
     _assert_single_allowed(key)
-    run_x11(["xdotool", "keyup", xdotool_key(key)])
+    if not _game_key(key, "up"):
+        run_x11(["xdotool", "keyup", xdotool_key(key)])
     with _held_lock:
         _held_keys.pop(key, None)
 
@@ -308,17 +351,29 @@ def release_all() -> dict:
     released = []
     for name, source in keys:
         try:
-            if source != "x11":
+            if source == "x11":
+                run_x11(["xdotool", "keyup", xdotool_key(name)])
+            elif source == "uinput":
+                with _game_lock:
+                    if _game_device is None:
+                        raise RuntimeError("game device is not open")
+                    _game_device.key_up(name)
+            else:
                 raise RuntimeError(f"unknown input source: {source}")
-            run_x11(["xdotool", "keyup", xdotool_key(name)])
             released.append(name)
         except Exception as exc:
             released.append(f"{name} (release failed: {exc})")
     for name, source in buttons:
         try:
-            if source != "x11":
+            if source == "x11":
+                run_x11(["xdotool", "mouseup", _button_code(name)])
+            elif source == "uinput":
+                with _game_lock:
+                    if _game_device is None:
+                        raise RuntimeError("game device is not open")
+                    _game_device.button_up(name)
+            else:
                 raise RuntimeError(f"unknown input source: {source}")
-            run_x11(["xdotool", "mouseup", _button_code(name)])
             released.append(f"mouse:{name}")
         except Exception as exc:
             released.append(f"mouse:{name} (release failed: {exc})")
@@ -909,16 +964,57 @@ class LinuxBackend(PlatformBackend):
 
     # game mode
     def game_start(self, sensitivity: int = 12) -> dict:
+        """Release all held input, then open the virtual uinput device.
+
+        The note documents the X11 limitation: the cursor cannot be
+        clipped, so the game itself must capture the pointer.
+        """
+        global _game_device
         self.require_x("game_start")
-        raise _unavailable("game_start")
+        release_all()
+        with _game_lock:
+            previous, _game_device = _game_device, None
+        if previous is not None:
+            try:
+                previous.close()
+            except Exception:
+                pass  # a stale device must not block a restart
+        width, height = self.screen_size()
+        device = UInputDevice()
+        with _game_lock:
+            _game_device = device
+        return {"ok": True, "center": [width // 2, height // 2],
+                "sensitivity": int(sensitivity),
+                "note": "cursor locked to center; use /api/game/move for "
+                        "camera look; X11 cannot clip the cursor — the game "
+                        "must capture the pointer"}
 
     def game_move(self, dx: int, dy: int, sensitivity: int = 12) -> dict:
+        """Relative camera look through the uinput device (no-op when off)."""
         self.require_x("game_move")
-        raise _unavailable("game_move")
+        with _game_lock:
+            if _game_device is not None:
+                _game_device.move_rel(dx * sensitivity, dy * sensitivity)
+        return {"ok": True}
 
     def game_stop(self) -> dict:
-        self.require_x("game_stop")
-        raise _unavailable("game_stop")
+        """Release everything, close the device, clear the active flag.
+
+        The watchdog calls this unguarded, so it never raises — not when
+        no device was opened and not when individual releases fail.
+        """
+        global _game_device
+        result = release_all()
+        with _game_lock:
+            device, _game_device = _game_device, None
+        if device is not None:
+            try:
+                device.close()
+            except Exception:
+                pass  # the flag is already cleared; close cannot fail a stop
+        return {"ok": True, "released": result["released"]}
 
     def game_active(self) -> bool:
-        return False
+        """Internal flag only (cheap, non-raising — watchdog contract)."""
+        with _game_lock:
+            return _game_device is not None

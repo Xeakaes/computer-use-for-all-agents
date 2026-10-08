@@ -1,22 +1,28 @@
 """LinuxBackend: display detection, Wayland fail-fast, xdotool input,
-wmctrl/xwininfo window management.
+wmctrl/xwininfo window management, uinput game mode.
 
 Unit tests patch os.environ and mock the xdotool runner so no display is
-required; the TestLinuxLiveInput, TestLinuxLiveWindows and
-TestLinuxLiveCapture groups run only against a real X11 DISPLAY.
+required; the TestLinuxLiveInput, TestLinuxLiveWindows,
+TestLinuxLiveCapture and TestLinuxLiveGame groups run only against a
+real X11 DISPLAY.
 """
 import os
+import re
 import subprocess
+import sys
 import time
 import unittest
 from unittest import mock
 
 from backends import linux as linux_mod
-from backends.linux import (LinuxBackend, held_state, key_down, key_hotkey,
-                            key_press, key_up, mouse_click, mouse_down,
-                            mouse_drag, mouse_move, mouse_move_relative,
-                            mouse_scroll, release_all, run_x11,
-                            type_segments, type_text, xdotool_key)
+from backends.linux import (KEYMAP, LinuxBackend, held_state, key_down,
+                            key_hotkey, key_press, key_up, mouse_click,
+                            mouse_down, mouse_drag, mouse_move,
+                            mouse_move_relative, mouse_scroll, mouse_up,
+                            release_all, run_x11, type_segments, type_text,
+                            xdotool_key)
+from backends.uinput import (UInputDevice, key_to_code,
+                             uinput_permission_error)
 from core.errors import ApiError
 
 SPEC_CAPABILITIES = {
@@ -71,6 +77,18 @@ class TestLinuxBackend(unittest.TestCase):
             self.assertFalse(backend.game_active())
             self.assertEqual(backend.probe_input_mode(1), "invalid")
 
+    def test_game_active_is_plain_flag(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            backend = LinuxBackend()
+            self.assertIs(backend.game_active(), False)
+
+    def test_game_stop_never_raises_without_display_or_device(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            backend = LinuxBackend()
+            self.assertEqual(backend.game_stop(),
+                             {"ok": True, "released": []})
+            self.assertIs(backend.game_active(), False)
+
     def test_forbidden_policy(self):
         with mock.patch.dict(os.environ,
                              {"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"}):
@@ -107,6 +125,15 @@ class TestLinuxInputUnit(unittest.TestCase):
         self.assertEqual(xdotool_key("ctrl"), "ctrl")
         for n in range(1, 13):
             self.assertEqual(xdotool_key(f"f{n}"), f"F{n}")
+
+    def test_every_keymap_name_has_a_uinput_code(self):
+        """In-game (uinput) and out-of-game (xdotool) name parity."""
+        for name in KEYMAP:
+            with self.subTest(name=name):
+                self.assertIsInstance(key_to_code(name), int)
+        self.assertEqual(key_to_code("escape"), 1)
+        self.assertEqual(key_to_code("home"), 102)
+        self.assertEqual(key_to_code("end"), 107)
 
     def test_runner_raises_operation_timeout_on_hang(self):
         with self.assertRaises(ApiError) as ctx:
@@ -336,6 +363,164 @@ class TestLinuxInputContracts(unittest.TestCase):
                          {"ok": True,
                           "released": ["ctrl (release failed: boom)"]})
         self.assertEqual(held_state(), {"keys": [], "buttons": []})
+
+
+class TestLinuxGameMode(unittest.TestCase):
+    """Task 9 game mode: uinput routing, release, watchdog contracts."""
+
+    def setUp(self):
+        env = mock.patch.dict(os.environ,
+                              {"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"})
+        env.start()
+        self.addCleanup(env.stop)
+        patcher = mock.patch("backends.linux.run_x11")
+        self.run = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(linux_mod._held_keys.clear)
+        self.addCleanup(linux_mod._held_buttons.clear)
+        self.addCleanup(self._close_leftover_device)
+        self.backend = LinuxBackend()
+
+    def _close_leftover_device(self):
+        device = linux_mod._game_device
+        linux_mod._game_device = None
+        if device is not None:
+            device.close()
+
+    def test_release_all_releases_both_sources(self):
+        device = mock.Mock()
+        with mock.patch.object(linux_mod, "_game_device", device):
+            linux_mod._hold("w", "x11", linux_mod._held_keys)
+            linux_mod._hold("a", "uinput", linux_mod._held_keys)
+            result = release_all()
+        self.assertEqual(result, {"ok": True, "released": ["w", "a"]})
+        self.assertEqual([c.args[0] for c in self.run.call_args_list],
+                         [["xdotool", "keyup", "w"]])
+        device.key_up.assert_called_once_with("a")
+        self.assertEqual(linux_mod._held_keys, {})
+        self.assertEqual(linux_mod._held_buttons, {})
+
+    def test_game_move_applies_sensitivity(self):
+        device = mock.Mock()
+        with mock.patch.object(linux_mod, "_game_device", device):
+            result = self.backend.game_move(3, -2, sensitivity=10)
+        self.assertEqual(result, {"ok": True})
+        device.move_rel.assert_called_once_with(30, -20)
+
+    def test_game_move_without_device_is_a_noop(self):
+        self.assertEqual(self.backend.game_move(3, -2), {"ok": True})
+
+    def test_game_start_releases_first(self):
+        events = []
+        device = mock.Mock()
+
+        def fake_release():
+            events.append("release")
+            return {"ok": True, "released": []}
+
+        with mock.patch("backends.linux.release_all",
+                        side_effect=fake_release), \
+             mock.patch("backends.linux.UInputDevice",
+                        side_effect=lambda: events.append("open") or device), \
+             mock.patch.object(LinuxBackend, "screen_size",
+                               return_value=(1920, 1080)):
+            result = self.backend.game_start(sensitivity=7)
+        self.assertEqual(events, ["release", "open"])
+        self.assertEqual(result, {
+            "ok": True, "center": [960, 540], "sensitivity": 7,
+            "note": "cursor locked to center; use /api/game/move for "
+                    "camera look; X11 cannot clip the cursor — the game "
+                    "must capture the pointer",
+        })
+        self.assertTrue(self.backend.game_active())
+
+    def test_game_start_failure_leaves_mode_inactive(self):
+        with mock.patch.object(LinuxBackend, "screen_size",
+                               return_value=(1920, 1080)), \
+             mock.patch("backends.linux.UInputDevice",
+                        side_effect=uinput_permission_error("game_start")):
+            with self.assertRaises(ApiError) as ctx:
+                self.backend.game_start()
+        self.assertEqual(ctx.exception.code, "PERMISSION_REQUIRED")
+        self.assertEqual(ctx.exception.status, 403)
+        self.assertIn("input group", ctx.exception.remediation)
+        self.assertFalse(self.backend.game_active())
+
+    def test_uinput_open_failure_surfaces_permission_required(self):
+        fake = mock.Mock()
+        fake.ecodes = mock.Mock(EV_KEY=1, EV_REL=2, REL_X=0, REL_Y=1)
+        fake.UInput.side_effect = PermissionError(13, "Permission denied")
+        with mock.patch.dict(sys.modules, {"evdev": fake}):
+            with self.assertRaises(ApiError) as ctx:
+                UInputDevice()
+        err = ctx.exception
+        self.assertEqual(err.code, "PERMISSION_REQUIRED")
+        self.assertEqual(err.status, 403)
+        self.assertEqual(err.action, "game_start")
+        self.assertEqual(err.remediation,
+                         uinput_permission_error("game_start").remediation)
+        self.assertIn("input group", err.remediation)
+
+    def test_game_mode_routes_key_and_button_events(self):
+        device = mock.Mock()
+        with mock.patch.object(linux_mod, "_game_device", device):
+            key_down("w")
+            self.assertEqual(held_state(), {"keys": ["w"], "buttons": []})
+            key_up("w")
+            key_press("a")
+            mouse_down("left")
+            self.assertEqual(held_state(), {"keys": [], "buttons": ["left"]})
+            mouse_up("left")
+        device.key_down.assert_has_calls([mock.call("w"), mock.call("a")])
+        device.key_up.assert_has_calls([mock.call("w"), mock.call("a")])
+        device.button_down.assert_called_once_with("left")
+        device.button_up.assert_called_once_with("left")
+        for call in self.run.call_args_list:
+            self.assertNotIn(call.args[0][1], ("key", "keydown", "keyup",
+                                               "mousedown", "mouseup"))
+        self.assertEqual(held_state(), {"keys": [], "buttons": []})
+
+    def test_game_mode_key_routing_enforces_forbidden_policy(self):
+        device = mock.Mock()
+        with mock.patch.object(linux_mod, "_game_device", device):
+            with self.assertRaises(ValueError):
+                key_down("alt+f4")
+            with self.assertRaises(PermissionError):
+                key_press("super")
+            with self.assertRaises(PermissionError):
+                key_up("delete")
+            with self.assertRaises(ValueError):
+                mouse_down("bogus")
+        self.assertEqual(device.mock_calls, [])
+        self.assertEqual(linux_mod._held_keys, {})
+        self.assertEqual(linux_mod._held_buttons, {})
+
+    def test_game_stop_releases_closes_and_clears(self):
+        device = mock.Mock()
+        linux_mod._game_device = device
+        linux_mod._hold("a", "uinput", linux_mod._held_keys)
+        result = self.backend.game_stop()
+        self.assertEqual(result, {"ok": True, "released": ["a"]})
+        device.key_up.assert_called_once_with("a")
+        device.close.assert_called_once_with()
+        self.assertFalse(self.backend.game_active())
+        self.assertEqual(linux_mod._held_keys, {})
+
+    def test_game_stop_never_raises_when_releases_fail(self):
+        device = mock.Mock()
+        device.key_up.side_effect = OSError("uinput write failed")
+        linux_mod._game_device = device
+        linux_mod._hold("a", "uinput", linux_mod._held_keys)
+        linux_mod._hold("w", "x11", linux_mod._held_keys)
+        self.run.side_effect = RuntimeError("xdotool exploded")
+        result = self.backend.game_stop()
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["released"]), 2)
+        for entry in result["released"]:
+            self.assertIn("release failed", entry)
+        self.assertFalse(self.backend.game_active())
+        self.assertEqual(linux_mod._held_keys, {})
+        device.close.assert_called_once_with()
 
 
 @unittest.skipUnless(os.environ.get("DISPLAY"), "requires an X11 DISPLAY")
@@ -1092,6 +1277,92 @@ class TestLinuxLiveCapture(unittest.TestCase):
                 img = self.backend.capture_window(0x1000)
         self.assertEqual(img.size, (800, 600))
         self.assertEqual(img.mode, "RGB")
+
+
+@unittest.skipUnless(os.environ.get("DISPLAY")
+                     and os.access("/dev/uinput", os.R_OK | os.W_OK),
+                     "requires an X11 DISPLAY and a writable /dev/uinput")
+class TestLinuxLiveGame(unittest.TestCase):
+    """Task 9 live uinput test — only ever touches its own xev window.
+
+    The desktop is shared with a human session and possibly a fullscreen
+    game, so the test spawns xev under a pid-unique name, focuses it,
+    skips whenever another X client holds the focus, and stops game mode
+    on the way out (release_all must keep working after game_stop).
+    """
+
+    def setUp(self):
+        self.backend = LinuxBackend()
+        self.procs = []
+        self.addCleanup(self._cleanup)
+        self.addCleanup(self.backend.release_all)
+        self.addCleanup(self.backend.game_stop)
+
+    def _cleanup(self):
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.terminate()
+        for proc in self.procs:
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+        self.procs.clear()
+
+    def test_game_mode_uinput_events_reach_x11(self):
+        name = f"SC-T9-gameev-{os.getpid()}"
+        proc = subprocess.Popen(["xev", "-name", name,
+                                 "-geometry", "200x200+400+300"],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+        self.procs.append(proc)
+        try:
+            wid = run_x11(["xdotool", "search", "--sync", "--name",
+                           name]).split()[-1]
+            run_x11(["xdotool", "windowfocus", "--sync", wid])
+            time.sleep(0.2)
+            if run_x11(["xdotool", "getactivewindow"]).strip() != wid:
+                self.skipTest("focus stolen by another X client; "
+                              "refusing to send game events to it")
+            win = next((w for w in self.backend.list_windows()
+                        if str(w["hwnd"]) == wid), None)
+            if win is None:
+                self.skipTest("own xev window disappeared from the list")
+            left, top, right, bottom = win["rect"]
+            try:
+                mouse_move((left + right) // 2, (top + bottom) // 2)
+            except ApiError as exc:
+                if exc.code != "OPERATION_TIMEOUT":
+                    raise
+                self.skipTest("pointer warp blocked by another X client")
+            time.sleep(0.3)
+            started = self.backend.game_start(sensitivity=1)
+            self.assertTrue(started["ok"])
+            pos = dict(line.split("=", 1) for line in
+                       run_x11(["xdotool", "getmouselocation",
+                                "--shell"]).splitlines() if "=" in line)
+            before_x, before_y = int(pos["X"]), int(pos["Y"])
+            self.backend.game_move(5, 0, sensitivity=1)
+            time.sleep(0.3)
+            if run_x11(["xdotool", "getactivewindow"]).strip() != wid:
+                self.skipTest("focus stolen before key events; "
+                              "refusing to send keys to a foreign window")
+            self.backend.key_down("w")
+            time.sleep(0.3)
+            self.backend.game_stop()
+            self.assertFalse(self.backend.game_active())
+            self.assertTrue(self.backend.release_all()["ok"])
+        finally:
+            proc.terminate()
+            out, _ = proc.communicate(timeout=10)
+        motions = re.findall(
+            r"MotionNotify event[^\n]*\n[^\n]*root:\((\d+),(\d+)\)", out)
+        self.assertTrue(motions, "xev saw no MotionNotify events")
+        self.assertGreaterEqual(
+            max(max(abs(int(x) - before_x), abs(int(y) - before_y))
+                for x, y in motions), 1)
+        self.assertIn("KeyPress event", out)
+        self.assertIn("keysym 0x77, w", out)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ _KEY_CODES: dict = {
     "ctrl": 29, "alt": 56, "shift": 42, "win": 125, "super": 125,
     "enter": 28, "esc": 1, "tab": 15, "space": 57, "backspace": 14,
     "delete": 111, "pageup": 104, "pagedown": 109,
+    "escape": 1, "home": 102, "end": 107,
     # arrows
     "up": 103, "down": 108, "left": 105, "right": 106,
     # letters (KEY_A..KEY_Z)
