@@ -2,17 +2,22 @@
 
 Construction fails closed on Wayland (UNSUPPORTED_DISPLAY_SERVER); without
 X11 every action raises BACKEND_UNAVAILABLE while read-only getters stay
-safe. ROADMAP Phase 5 tasks 8-9 replace the remaining stub bodies group by
-group (mss capture, uinput game mode).
+safe. ROADMAP Phase 5 task 9 replaces the remaining game-mode stubs.
 """
 from __future__ import annotations
 
+import io
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
 
+import mss
+from PIL import Image
+
+from backends import imageops
 from backends.forbidden import assert_forbidden
 from core.backends import PlatformBackend
 from core.errors import ApiError
@@ -471,6 +476,18 @@ def _xwininfo_origin(text: str):
     return int(mx.group(1)), int(my.group(1))
 
 
+_WIDTH = re.compile(r"^\s+Width:\s*(\d+)", re.M)
+_HEIGHT = re.compile(r"^\s+Height:\s*(\d+)", re.M)
+
+
+def _xwininfo_size(text: str):
+    """Pixel (width, height) of the queried window, or None (pure)."""
+    mw, mh = _WIDTH.search(text), _HEIGHT.search(text)
+    if not mw or not mh:
+        return None
+    return int(mw.group(1)), int(mh.group(1))
+
+
 _INPUT_CLASS_HINTS = ("edit", "richedit", "textbox", "textinput",
                       "entry", "field")
 
@@ -501,34 +518,120 @@ class LinuxBackend(PlatformBackend):
 
     # capture
     def screen_size(self, monitor: int = 1) -> tuple:
+        """Width/height of one monitor (mss index, 1 = first physical)."""
         self.require_x("screen_size")
-        raise _unavailable("screen_size")
+        with mss.MSS() as sct:
+            mon = sct.monitors[monitor]
+            return mon["width"], mon["height"]
 
     def list_monitors(self) -> list:
+        """Physical monitors with Windows-parity fields (1-based ids)."""
         self.require_x("list_monitors")
-        raise _unavailable("list_monitors")
+        monitors = []
+        with mss.MSS() as sct:
+            for i, mon in enumerate(sct.monitors):
+                if i == 0:  # skip the virtual all-in-one monitor
+                    continue
+                monitors.append({
+                    "id": i,
+                    "name": f"Monitor {i}",
+                    "left": mon["left"],
+                    "top": mon["top"],
+                    "width": mon["width"],
+                    "height": mon["height"],
+                    "is_primary": i == 1,
+                })
+        return monitors
 
     def screenshot(self, monitor: int = 1, region=None):
+        """Capture a monitor or an (x, y, w, h) region as an RGB Image."""
         self.require_x("screenshot")
-        raise _unavailable("screenshot")
+        with mss.MSS() as sct:
+            if region is None:
+                mon = sct.monitors[monitor]
+            else:
+                x, y, w, h = region
+                mon = {"left": x, "top": y, "width": w, "height": h}
+            raw = sct.grab(mon)
+            return Image.frombytes("RGB", raw.size, raw.rgb)
 
     def screenshot_jpeg(self, monitor: int = 1, region=None,
                         quality: int = 80) -> bytes:
+        """JPEG bytes via imageops.encode_jpeg (faster for streaming)."""
         self.require_x("screenshot_jpeg")
-        raise _unavailable("screenshot_jpeg")
+        return imageops.encode_jpeg(self.screenshot(monitor, region),
+                                    quality)
 
     def screenshot_scaled(self, monitor: int = 1, region=None,
                           scale: float = 1.0, grayscale: bool = False):
+        """Scaled/grayscale frame via imageops.scale_image."""
         self.require_x("screenshot_scaled")
-        raise _unavailable("screenshot_scaled")
+        return imageops.scale_image(self.screenshot(monitor, region),
+                                    scale, grayscale)
 
     def frame_diff(self, prev, cur) -> dict:
+        """Structured diff between two frames (delegates to imageops)."""
         self.require_x("frame_diff")
-        raise _unavailable("frame_diff")
+        return imageops.frame_diff(prev, cur)
 
     def capture_window(self, hwnd: int, client_only: bool = False):
+        """Capture a window's client area as an RGB Image.
+
+        Always the client area for both `client_only` values: X11
+        decorations live in a separate reparenting frame window that
+        these primitives cannot reach (on Windows, client_only=False
+        includes that frame). The captured origin therefore matches
+        client_to_screen exactly, so OCR region coordinates do not drift.
+
+        Uses ImageMagick `import -window <id>` when installed; the
+        compositor usually yields the window's own pixels even when it
+        is occluded. Without it, falls back to an mss grab of the
+        window's screen rectangle — that captures the screen as-is, so
+        an occluded window shows whatever is on top. Failures raise
+        RuntimeError so the server answers 409.
+        """
         self.require_x("capture_window")
-        raise _unavailable("capture_window")
+        if shutil.which("import"):
+            try:
+                proc = subprocess.run(
+                    ["import", "-window", hex(hwnd), "png:-"],
+                    capture_output=True, timeout=5.0)
+            except FileNotFoundError:
+                raise RuntimeError(
+                    f"import disappeared from PATH while capturing "
+                    f"{hex(hwnd)}") from None
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(
+                    f"import timed out capturing {hex(hwnd)}") from exc
+            if proc.returncode != 0:
+                detail = proc.stderr.decode("utf-8", "replace").splitlines()
+                raise RuntimeError(
+                    f"import failed for window {hex(hwnd)}: "
+                    f"{detail[0] if detail else 'no error output'}")
+            try:
+                with Image.open(io.BytesIO(proc.stdout)) as img:
+                    return img.convert("RGB")
+            except OSError as exc:
+                raise RuntimeError(
+                    f"import returned an unreadable image for "
+                    f"{hex(hwnd)}: {exc}") from exc
+        try:
+            text = run_x11(["xwininfo", "-id", hex(hwnd)])
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"window {hex(hwnd)} cannot be captured: {exc}") from exc
+        origin, size = _xwininfo_origin(text), _xwininfo_size(text)
+        if origin is None or size is None:
+            raise RuntimeError(f"window {hex(hwnd)} has no usable geometry")
+        left, top = origin
+        width, height = size
+        if width <= 0 or height <= 0:
+            raise RuntimeError(
+                f"window {hex(hwnd)} has invalid size {width}x{height}")
+        with mss.MSS() as sct:
+            raw = sct.grab({"left": left, "top": top,
+                            "width": width, "height": height})
+        return Image.frombytes("RGB", raw.size, raw.rgb)
 
     # mouse
     def mouse_move(self, x: int, y: int, duration: float = 0.15) -> None:

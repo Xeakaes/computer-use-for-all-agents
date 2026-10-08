@@ -2,8 +2,8 @@
 wmctrl/xwininfo window management.
 
 Unit tests patch os.environ and mock the xdotool runner so no display is
-required; the TestLinuxLiveInput and TestLinuxLiveWindows groups run only
-against a real X11 DISPLAY.
+required; the TestLinuxLiveInput, TestLinuxLiveWindows and
+TestLinuxLiveCapture groups run only against a real X11 DISPLAY.
 """
 import os
 import subprocess
@@ -912,6 +912,159 @@ class TestLinuxLiveWindows(unittest.TestCase):
         self.assertEqual(got, before)
         self.assertEqual(self.backend.client_to_screen(found["hwnd"], 10, 20),
                          (before[0] + 10, before[1] + 20))
+
+
+class TestLinuxCaptureContracts(unittest.TestCase):
+    """Task 8 capture failure mapping — RuntimeError means server 409."""
+
+    def setUp(self):
+        env = mock.patch.dict(os.environ,
+                              {"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_import_failure_raises_runtime_error(self):
+        failed = subprocess.CompletedProcess(
+            ["import"], returncode=1,
+            stderr=b"import: no window with specified ID exists\n")
+        with mock.patch("backends.linux.shutil.which",
+                        return_value="/usr/bin/import"):
+            with mock.patch("backends.linux.subprocess.run",
+                            return_value=failed):
+                with self.assertRaises(RuntimeError) as ctx:
+                    LinuxBackend().capture_window(0x7FFFFFFE)
+        self.assertIn("import failed", str(ctx.exception))
+        self.assertIn("0x7ffffffe", str(ctx.exception))
+
+
+@unittest.skipUnless(os.environ.get("DISPLAY"), "requires an X11 DISPLAY")
+class TestLinuxLiveCapture(unittest.TestCase):
+    """Task 8 live capture tests — self-contained on a shared desktop.
+
+    Screen grabs are read-only, but capture_window must never be pointed
+    at foreign windows: the window tests open and focus their own
+    xmessage windows and skip when another X client keeps the focus.
+    """
+
+    def setUp(self):
+        self.backend = LinuxBackend()
+        self.procs = []
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self):
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.terminate()
+        for proc in self.procs:
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+        self.procs.clear()
+
+    def _spawn(self, title):
+        proc = subprocess.Popen(
+            ["xmessage", "-buttons", "", "-title", title, "t8"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.procs.append(proc)
+        return proc
+
+    def _find(self, title, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for win in self.backend.list_windows():
+                if win["title"] == title:
+                    return win
+            time.sleep(0.1)
+        return None
+
+    def _read_active(self):
+        try:
+            raw = run_x11(["xdotool", "getactivewindow"]).strip()
+        except (ApiError, RuntimeError):
+            return None
+        try:
+            return int(raw, 16) if raw.lower().startswith("0x") else int(raw)
+        except ValueError:
+            return None
+
+    def test_screen_size_matches_xrandr(self):
+        width, height = self.backend.screen_size()
+        out = run_x11(["xdotool", "getdisplaygeometry"]).split()
+        self.assertEqual((width, height), (int(out[0]), int(out[1])))
+
+    def test_screenshot_region_size(self):
+        img = self.backend.screenshot(region=(0, 0, 50, 40))
+        self.assertEqual(img.size, (50, 40))
+        self.assertEqual(img.mode, "RGB")
+
+    def test_screenshot_jpeg_magic_bytes(self):
+        data = self.backend.screenshot_jpeg()
+        self.assertIsInstance(data, bytes)
+        self.assertTrue(data.startswith(b"\xff\xd8"))
+
+    def test_screenshot_scaled_half(self):
+        full = self.backend.screenshot()
+        half = self.backend.screenshot_scaled(scale=0.5)
+        self.assertEqual(half.size, (full.width // 2, full.height // 2))
+
+    def test_list_monitors_shape(self):
+        monitors = self.backend.list_monitors()
+        self.assertGreaterEqual(len(monitors), 1)
+        first = monitors[0]
+        self.assertEqual(set(first), {"id", "name", "left", "top", "width",
+                                      "height", "is_primary"})
+        self.assertEqual(first["id"], 1)
+        self.assertIs(first["is_primary"], True)
+        self.assertGreater(first["width"], 0)
+        self.assertGreater(first["height"], 0)
+
+    def test_frame_diff_between_two_captures(self):
+        prev = self.backend.screenshot(region=(0, 0, 64, 48))
+        cur = self.backend.screenshot(region=(0, 0, 64, 48))
+        diff = self.backend.frame_diff(prev, cur)
+        self.assertEqual(set(diff), {"changed", "bbox", "changed_pct",
+                                     "tiles"})
+        self.assertIsInstance(diff["changed"], bool)
+        self.assertIsInstance(diff["changed_pct"], float)
+        self.assertIsInstance(diff["tiles"], list)
+
+    def test_capture_window_of_active_window(self):
+        self._spawn("SC-T8-capture")
+        found = self._find("SC-T8-capture")
+        if found is None:
+            self.skipTest("xmessage window did not appear in the window list")
+        for _ in range(3):
+            try:
+                self.backend.focus_window(found["hwnd"])
+                break
+            except (ApiError, RuntimeError):
+                time.sleep(0.3)
+        else:
+            self.skipTest("focus stolen by another X client before capture")
+        if self._read_active() != found["hwnd"]:
+            self.skipTest("active window changed to a foreign window")
+        img = self.backend.capture_window(found["hwnd"])
+        self.assertGreater(img.width, 10)
+        self.assertGreater(img.height, 10)
+        self.assertEqual(img.mode, "RGB")
+        client = self.backend.capture_window(found["hwnd"],
+                                             client_only=True)
+        self.assertEqual(client.size, img.size)
+
+    def test_capture_window_mss_fallback_grabs_geometry(self):
+        geometry = ('xwininfo: Window id: 0x1000 "Fallback"\n'
+                    '\n'
+                    '  Absolute upper-left X:  50\n'
+                    '  Absolute upper-left Y:  82\n'
+                    '  Width: 800\n'
+                    '  Height: 600\n')
+        with mock.patch("backends.linux.shutil.which", return_value=None):
+            with mock.patch("backends.linux.run_x11",
+                            return_value=geometry):
+                img = self.backend.capture_window(0x1000)
+        self.assertEqual(img.size, (800, 600))
+        self.assertEqual(img.mode, "RGB")
 
 
 if __name__ == "__main__":
