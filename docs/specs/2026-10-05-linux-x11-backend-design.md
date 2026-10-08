@@ -235,7 +235,8 @@ as reviewed.
   the game must capture the pointer") is authoritative; the §5.4 quoted
   phrase was a paraphrase.
 - **§5.1 key names** — `super`/`meta` are policy-normalized to `win` for the
-  forbidden-key checks (strict Windows parity: unsendable in any combo on
-  either platform); multi-part names like `alt+f4` are rejected with
+  forbidden-key checks (on Linux, `super`/`meta` are unsendable exactly like
+  `win` is on Windows; on Windows the alias normalization does not apply —
+  known asymmetry); multi-part names like `alt+f4` are rejected with
   `ValueError` (→ HTTP 400) in the single-key functions — chord grammar
   belongs to the hotkey action.

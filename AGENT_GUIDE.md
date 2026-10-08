@@ -75,8 +75,9 @@ echo "$XDG_SESSION_TYPE" "$XDG_CURRENT_DESKTOP"
   scope (ROADMAP Phase 6). Do **not** retry blindly; the only fix is
   starting an X11 session (log out → session chooser at the login screen →
   "Cinnamon on Xorg"), then starting the server again.
-- **empty / unknown** — treat as "no display": X-dependent actions fail
-  closed with `BACKEND_UNAVAILABLE` (501) rather than acting on guesses.
+- **empty / unknown** — treat as "no display" (and no `DISPLAY`): X-dependent
+  actions fail closed with `BACKEND_UNAVAILABLE` (501) rather than acting on
+  guesses.
 
 ---
 
@@ -703,8 +704,9 @@ in ≈40 ms (measured). Do not OCR after every action.
 - Prefer `GET /api/vision/frame?scale=0.5&gray=1` (one JPEG) or
   `GET /api/stream` (MJPEG) for repeated reads — they return in milliseconds.
 - Use `POST /api/vision/diff` when you only need "what changed".
-- When you do need OCR, always pass a `"region"` — small crops are ~10×
-  faster — and batch several reads together between actions:
+- When you do need OCR, always pass a `"region"` — small crops are ≈4.4×
+  faster (measured ≈1.3 s vs ≈5.7 s full-screen) — and batch several reads
+  together between actions:
 
 ```bash
 # One region read instead of a full-screen OCR

@@ -371,7 +371,7 @@ stub backend), `"optional"` (depends on an optional dependency).
 
 ### Platform Support Matrix
 
-| Capability | Windows | Linux X11 | Linux Wayland | macOS |
+| Capability | Windows | Linux X11 | Linux Wayland<sup>†</sup> | macOS |
 |---|---:|---:|---:|---:|
 | Screen capture | Full | Full | Portal-dependent | Permission required |
 | OCR | Full/optional | Full/optional | Full/optional | Full/optional |
@@ -379,7 +379,7 @@ stub backend), `"optional"` (depends on an optional dependency).
 | Keyboard control | Full | Full | Restricted | Accessibility permission |
 | Window enumeration | Full | WM-dependent | Limited | Accessibility/API-dependent |
 | Background input | Strong | Focus-first (stealing) | Usually unavailable | Limited |
-| Virtual desktops | Supported | DE/WM-dependent | DE/WM-dependent | Spaces-specific |
+| Virtual desktops | Supported | **No (503)** | DE/WM-dependent | Spaces-specific |
 | Game mode | Supported | Experimental | Limited | Experimental |
 
 > **Linux X11 is implemented and supported with limits** — setup, requirements
@@ -387,6 +387,10 @@ stub backend), `"optional"` (depends on an optional dependency).
 > fails fast with `UNSUPPORTED_DISPLAY_SERVER` (501), and **macOS** remains a
 > fail-closed stub: every operation returns `BACKEND_UNAVAILABLE` (501) until
 > ROADMAP Phase 7. Windows is the reference backend.
+>
+> <sup>†</sup> Wayland column is hypothetical capability planning only — the
+> server never starts on Wayland (see the note above), so no Wayland cell is
+> currently reachable.
 
 ### Authentication
 
