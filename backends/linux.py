@@ -1,13 +1,14 @@
-"""Linux backend — X11 input via xdotool with fail-fast Wayland detection.
+"""Linux backend — X11 input via xdotool, window management via wmctrl.
 
 Construction fails closed on Wayland (UNSUPPORTED_DISPLAY_SERVER); without
 X11 every action raises BACKEND_UNAVAILABLE while read-only getters stay
-safe. ROADMAP Phase 5 tasks 7-9 replace the remaining stub bodies group by
-group (wmctrl window management, mss capture, uinput game mode).
+safe. ROADMAP Phase 5 tasks 8-9 replace the remaining stub bodies group by
+group (mss capture, uinput game mode).
 """
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import threading
 import time
@@ -286,8 +287,163 @@ def release_all() -> dict:
     return {"ok": True, "released": released}
 
 
+# ---------------------------------------------------------------------------
+# windows — wmctrl/xwininfo parsing and helpers (Task 7)
+# ---------------------------------------------------------------------------
+
+def parse_wmctrl(line: str):
+    """Parse one line of `wmctrl -lGpx` output; None when malformed (pure).
+
+    Column layout per wmctrl(1): WINDOW DESKTOP PID X Y W H WM_CLASS
+    CLIENT-MACHINE TITLE. The client-machine column is always present and
+    the title is the remainder of the line, so it may contain spaces and
+    any UTF-8 text.
+    """
+    parts = line.split(None, 9)
+    if len(parts) < 9 or not parts[0].startswith("0x"):
+        return None
+    try:
+        hwnd = int(parts[0], 16)
+        desktop = int(parts[1])
+        pid = int(parts[2])
+        x, y, w, h = (int(parts[i]) for i in (3, 4, 5, 6))
+    except ValueError:
+        return None
+    return {"hwnd": hwnd, "desktop": desktop, "rect": [x, y, x + w, y + h],
+            "pid": pid, "wm_class": parts[7],
+            "title": parts[9] if len(parts) == 10 else ""}
+
+
+_TREE_LINE = re.compile(
+    r'^\s+(?P<hwnd>0x[0-9a-fA-F]+)\s+(?:"(?P<title>[^"]*)"|\(has no name\)):'
+    r'\s+\((?P<cls>[^)]*)\)')
+
+
+def parse_xwininfo_tree(text: str) -> list:
+    """Parse the child lines of `xwininfo -id <id> -tree` (pure).
+
+    Each child line carries its window id, its quoted title (or
+    "(has no name)"), and its WM_CLASS pair in parentheses; header lines
+    ("xwininfo:", "Root window id:", "N child:") are skipped. Returns all
+    descendants, mirroring Win32 EnumChildWindows.
+    """
+    children = []
+    for line in text.splitlines():
+        match = _TREE_LINE.match(line)
+        if not match:
+            continue
+        quoted = re.findall(r'"([^"]*)"', match.group("cls"))
+        children.append({"hwnd": int(match.group("hwnd"), 16),
+                         "class": quoted[-1] if quoted else "",
+                         "title": match.group("title") or ""})
+    return children
+
+
+def process_name(pid: int) -> "str | None":
+    """Resolve a pid to its process name via /proc/<pid>/comm (None if gone)."""
+    try:
+        with open(f"/proc/{int(pid)}/comm", encoding="utf-8",
+                  errors="replace") as fh:
+            name = fh.read().strip()
+    except (OSError, ValueError):
+        return None
+    return name or None
+
+
+# X11 keysym values (X11/keysymdef.h) for every KEYMAP target plus the
+# modifier names xdotool accepts as pass-through aliases. Verified against
+# Xlib.XK.string_to_keysym.
+_KEYSYM_NAMES = {
+    "space": 0x0020, "Tab": 0xFF09, "BackSpace": 0xFF08,
+    "Return": 0xFF0D, "Escape": 0xFF1B, "Delete": 0xFFFF,
+    "Home": 0xFF50, "Left": 0xFF51, "Up": 0xFF52, "Right": 0xFF53,
+    "Down": 0xFF54, "Page_Up": 0xFF55, "Page_Down": 0xFF56, "End": 0xFF57,
+    "Shift_L": 0xFFE1, "Shift_R": 0xFFE2, "Control_L": 0xFFE3,
+    "Control_R": 0xFFE4, "Alt_L": 0xFFE9, "Alt_R": 0xFFEA,
+    "Super_L": 0xFFEB, "Super_R": 0xFFEC,
+    "F1": 0xFFBE, "F2": 0xFFBF, "F3": 0xFFC0, "F4": 0xFFC1,
+    "F5": 0xFFC2, "F6": 0xFFC3, "F7": 0xFFC4, "F8": 0xFFC5,
+    "F9": 0xFFC6, "F10": 0xFFC7, "F11": 0xFFC8, "F12": 0xFFC9,
+}
+
+_KEYSYM_ALIASES = {"ctrl": "Control_L", "control": "Control_L",
+                   "alt": "Alt_L", "shift": "Shift_L", "super": "Super_L"}
+
+
+def keysym_for(key: str) -> int:
+    """Resolve an API key name to its X11 keysym int (pure).
+
+    Unknown names raise ValueError (vk_from_name parity: the server maps
+    that to a 400).
+    """
+    name = xdotool_key(key)
+    name = _KEYSYM_ALIASES.get(name.lower(), name)
+    if name in _KEYSYM_NAMES:
+        return _KEYSYM_NAMES[name]
+    if len(name) == 1:
+        code = ord(name)
+        return code if code < 256 else 0x01000000 | code
+    raise ValueError(f"unknown key name: {key!r}")
+
+
+def _wmctrl_lines() -> list:
+    """`wmctrl -lGpx` lines; a window closing mid-listing aborts the whole
+    run with BadWindow, so retry the race out before giving up."""
+    last = None
+    for attempt in range(3):
+        try:
+            return run_x11(["wmctrl", "-lGpx"]).splitlines()
+        except RuntimeError as exc:
+            last = exc
+            if attempt < 2:
+                time.sleep(0.05)
+    raise last
+
+
+def _window_info(hwnd: int):
+    """wmctrl entry for one hwnd, None when absent (raises on tool failure)."""
+    for line in _wmctrl_lines():
+        info = parse_wmctrl(line)
+        if info and info["hwnd"] == hwnd:
+            return info
+    return None
+
+
+def _window_present(hwnd: int) -> bool:
+    """True unless wmctrl proves the window gone (conservative on errors)."""
+    try:
+        return _window_info(hwnd) is not None
+    except (ApiError, RuntimeError):
+        return True
+
+
+def _active_window():
+    """Id of the X11 active window, or None when it cannot be parsed."""
+    raw = run_x11(["xdotool", "getactivewindow"]).strip()
+    try:
+        return int(raw, 16) if raw.lower().startswith("0x") else int(raw)
+    except ValueError:
+        return None
+
+
+_ABS_X = re.compile(r"Absolute upper-left X:\s*(-?\d+)")
+_ABS_Y = re.compile(r"Absolute upper-left Y:\s*(-?\d+)")
+
+
+def _xwininfo_origin(text: str):
+    """Root-absolute (x, y) origin of the queried window, or None."""
+    mx, my = _ABS_X.search(text), _ABS_Y.search(text)
+    if not mx or not my:
+        return None
+    return int(mx.group(1)), int(my.group(1))
+
+
+_INPUT_CLASS_HINTS = ("edit", "richedit", "textbox", "textinput",
+                      "entry", "field")
+
+
 class LinuxBackend(PlatformBackend):
-    """X11-only skeleton; see the Phase 5 design spec for the plan."""
+    """X11 implementation of PlatformBackend; design spec: Phase 5."""
 
     def __init__(self) -> None:
         if display_server() == "wayland":
@@ -401,77 +557,214 @@ class LinuxBackend(PlatformBackend):
     # windows
     def list_windows(self) -> list:
         self.require_x("list_windows")
-        raise _unavailable("list_windows")
+        lines = _wmctrl_lines()
+        try:
+            active = _active_window()
+        except (ApiError, RuntimeError):
+            active = None
+        windows = []
+        for line in lines:
+            info = parse_wmctrl(line)
+            if not info or not info["title"]:
+                continue
+            windows.append({
+                "hwnd": info["hwnd"],
+                "title": info["title"],
+                "process": process_name(info["pid"]) or "?",
+                "pid": info["pid"],
+                "focused": active is not None and info["hwnd"] == active,
+                "rect": info["rect"],
+            })
+        return windows
 
     def get_focused_window(self):
         self.require_x("get_focused_window")
-        raise _unavailable("get_focused_window")
+        try:
+            active = _active_window()
+        except (ApiError, RuntimeError):
+            return None
+        if active is None:
+            return None
+        for window in self.list_windows():
+            if window["hwnd"] == active:
+                return window
+        return None
 
     def focus_window(self, hwnd: int) -> None:
         self.require_x("focus_window")
-        raise _unavailable("focus_window")
+        run_x11(["xdotool", "windowactivate", "--sync", hex(hwnd)])
+        try:
+            active = _active_window()
+        except (ApiError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"focus_window: cannot verify the active window: {exc}"
+            ) from exc
+        if active != hwnd:
+            raise RuntimeError(
+                f"focus_window: hwnd {hwnd} did not take focus "
+                f"(active window is {active})")
 
     def close_window(self, hwnd: int, expect_title=None,
                      expect_process=None) -> dict:
-        self.require_x("close_window")
-        raise _unavailable("close_window")
+        """Close after title/process verification; never raises on mismatch.
+
+        Every refusal path returns before the mutating `wmctrl -ic`, and a
+        missing display is refused before any X call at all.
+        """
+        if display_server() != "x11":
+            return {"ok": False,
+                    "error": "no X11 display; cannot verify the window; "
+                             "refusing to close"}
+        try:
+            info = _window_info(hwnd)
+        except (ApiError, RuntimeError) as exc:
+            return {"ok": False,
+                    "error": f"cannot verify window {hex(hwnd)}: {exc}"}
+        title = info["title"] if info else ""
+        if not title:
+            return {"ok": False,
+                    "error": "window has no title; refusing to close"}
+        if expect_title and expect_title.lower() not in title.lower():
+            return {"ok": False,
+                    "error": f"title mismatch: expected '{expect_title}', "
+                             f"got '{title}'"}
+        if expect_process:
+            name = process_name(info["pid"])
+            if (name or "").lower() != expect_process.lower():
+                return {"ok": False,
+                        "error": f"process mismatch: expected "
+                                 f"'{expect_process}', got '{name or '?'}'"}
+        try:
+            run_x11(["wmctrl", "-ic", hex(hwnd)])
+        except RuntimeError:
+            pass  # the window vanished between verification and close
+        deadline = time.monotonic() + 1.0
+        closed = not _window_present(hwnd)
+        while not closed and time.monotonic() < deadline:
+            time.sleep(0.1)
+            closed = not _window_present(hwnd)
+        return {"ok": True, "closed": closed, "title": title,
+                "note": "" if closed else
+                        "window still open (app may be showing a save "
+                        "prompt); use kill with the pid if it must go"}
 
     def kill_process(self, pid: int) -> dict:
-        self.require_x("kill_process")
-        raise _unavailable("kill_process")
+        """SIGKILL a pid after the guard checks, before any call is made."""
+        if pid <= 1:
+            return {"ok": False,
+                    "output": f"refusing to kill pid {pid} (system process)"}
+        if pid == os.getpid():
+            return {"ok": False, "output": "refusing to kill own process"}
+        try:
+            output = run_x11(["kill", "-9", str(pid)]).strip()
+        except RuntimeError as exc:
+            return {"ok": False, "output": str(exc)}
+        return {"ok": True, "output": output}
 
     def process_name(self, pid: int) -> "str | None":
-        self.require_x("process_name")
-        raise _unavailable("process_name")
+        return process_name(pid)
 
     def probe_input_mode(self, hwnd: int) -> str:
-        return "invalid"
+        """'focused' for a live window, 'invalid' otherwise; never raises."""
+        if display_server() != "x11":
+            return "invalid"
+        try:
+            return "focused" if _window_info(hwnd) is not None else "invalid"
+        except Exception:
+            return "invalid"
 
     def maximize_window(self, hwnd: int) -> None:
         self.require_x("maximize_window")
-        raise _unavailable("maximize_window")
+        run_x11(["wmctrl", "-ir", hex(hwnd), "-b",
+                 "add,maximized_vert,maximized_horz"])
 
     def set_topmost(self, hwnd: int, topmost: bool) -> None:
         self.require_x("set_topmost")
-        raise _unavailable("set_topmost")
+        run_x11(["wmctrl", "-ir", hex(hwnd), "-b",
+                 "add,above" if topmost else "remove,above"])
 
     def window_type_text(self, hwnd: int, text: str) -> dict:
         self.require_x("window_type_text")
-        raise _unavailable("window_type_text")
+        self.focus_window(hwnd)
+        type_text(text)
+        return {"ok": True, "chars": len(text)}
 
     def window_key(self, hwnd: int, key: str) -> dict:
+        assert_forbidden([key])
+        vk = keysym_for(key)
         self.require_x("window_key")
-        raise _unavailable("window_key")
+        self.focus_window(hwnd)
+        run_x11(["xdotool", "key", xdotool_key(key)])
+        return {"ok": True, "vk": vk}
 
     def window_hotkey(self, hwnd: int, keys) -> dict:
+        keys = list(keys)
+        assert_forbidden(keys)
+        vks = [keysym_for(key) for key in keys]
         self.require_x("window_hotkey")
-        raise _unavailable("window_hotkey")
+        self.focus_window(hwnd)
+        if keys:
+            run_x11(["xdotool", "key",
+                     "+".join(xdotool_key(key) for key in keys)])
+        return {"ok": True, "vk": vks[0] if vks else None, "vks": vks}
 
     def window_click(self, hwnd: int, x: int, y: int,
                      button: str = "left", clicks: int = 1) -> dict:
         self.require_x("window_click")
-        raise _unavailable("window_click")
+        self.focus_window(hwnd)
+        screen_x, screen_y = self.client_to_screen(hwnd, x, y)
+        mouse_click(screen_x, screen_y, button, int(clicks))
+        return {"ok": True, "x": x, "y": y, "button": button,
+                "clicks": int(clicks)}
 
     def window_scroll(self, hwnd: int, clicks: int) -> dict:
         self.require_x("window_scroll")
-        raise _unavailable("window_scroll")
+        self.focus_window(hwnd)
+        center = None
+        try:
+            info = _window_info(hwnd)
+        except (ApiError, RuntimeError):
+            info = None
+        if info:
+            left, top, right, bottom = info["rect"]
+            center = ((left + right) // 2, (top + bottom) // 2)
+        mouse_scroll(int(clicks), *(center or (None, None)))
+        return {"ok": True, "clicks": int(clicks)}
 
     def window_drag(self, hwnd: int, x1: int, y1: int, x2: int, y2: int,
                     button: str = "left") -> dict:
         self.require_x("window_drag")
-        raise _unavailable("window_drag")
+        self.focus_window(hwnd)
+        start = self.client_to_screen(hwnd, x1, y1)
+        end = self.client_to_screen(hwnd, x2, y2)
+        mouse_drag(start[0], start[1], end[0], end[1], button=button)
+        return {"ok": True, "from": [x1, y1], "to": [x2, y2]}
 
     def list_children(self, hwnd: int) -> list:
         self.require_x("list_children")
-        raise _unavailable("list_children")
+        try:
+            text = run_x11(["xwininfo", "-id", hex(hwnd), "-tree"])
+        except RuntimeError:
+            return []
+        return parse_xwininfo_tree(text)
 
     def pick_input_child(self, hwnd: int) -> "int | None":
-        self.require_x("pick_input_child")
-        raise _unavailable("pick_input_child")
+        for child in self.list_children(hwnd):
+            cls = child["class"].lower()
+            if any(hint in cls for hint in _INPUT_CLASS_HINTS):
+                return child["hwnd"]
+        return None
 
     def client_to_screen(self, hwnd: int, x: int, y: int) -> tuple:
         self.require_x("client_to_screen")
-        raise _unavailable("client_to_screen")
+        try:
+            text = run_x11(["xwininfo", "-id", hex(hwnd)])
+        except RuntimeError as exc:
+            raise ValueError(f"window {hex(hwnd)} is gone: {exc}") from exc
+        origin = _xwininfo_origin(text)
+        if origin is None:
+            raise ValueError(f"window {hex(hwnd)} has no geometry")
+        return origin[0] + x, origin[1] + y
 
     # game mode
     def game_start(self, sensitivity: int = 12) -> dict:
