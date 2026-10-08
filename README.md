@@ -1,4 +1,4 @@
-# 🖥️ Computer-use-for-ALL-agents
+# 🖥️ Computer use for all agents
 
 <p align="center">
   <img src="docs/images/logo.png" alt="screen-control logo" width="88" align="right">
