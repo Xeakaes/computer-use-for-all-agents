@@ -347,16 +347,16 @@ pip install -r requirements.txt
 
 ## Tasks
 
-- [ ] Implement `LinuxX11Backend`.
-- [ ] Add screen capture.
-- [ ] Add absolute mouse control.
-- [ ] Add keyboard input.
-- [ ] Add window listing.
-- [ ] Add active-window detection.
-- [ ] Add focus control.
-- [ ] Add X11 permission/environment diagnostics.
-- [ ] Add Ubuntu X11 smoke tests.
-- [ ] Document limitations for different window managers.
+- [x] Implement `LinuxX11Backend`.
+- [x] Add screen capture.
+- [x] Add absolute mouse control.
+- [x] Add keyboard input.
+- [x] Add window listing.
+- [x] Add active-window detection.
+- [x] Add focus control.
+- [x] Add X11 permission/environment diagnostics.
+- [x] Add Ubuntu X11 smoke tests.
+- [x] Document limitations for different window managers.
 - [ ] Test GNOME, KDE, and XFCE where possible.
 
 ## Important Limitations

@@ -216,3 +216,26 @@ Regression:
 - Virtual desktop/workspace API on Linux (`/api/desktops` stays 503)
 - Fractional scaling validation (display runs at 1.0; documented as untested)
 - Committing/pushing (user must ask explicitly)
+
+## Errata
+
+Entries dated 2026-10-08 (post-implementation); the spec body above is left
+as reviewed.
+
+- **§5.2 `client_to_screen`** — implemented with `xwininfo` "Absolute
+  upper-left", not `xdotool getwindowgeometry --shell`: on the tested system
+  xdotool returns abs+parent-relative coordinates (same bug as `wmctrl -G`);
+  `xwininfo` is Xlib-verified correct.
+- **§5.2 `list_windows` geometry** — `wmctrl -lGpx` X/Y are unusable for the
+  same reason, so `rect` now comes from `xwininfo -root -tree` absolute
+  bounds (frame/parent bounds when reparented = §4 `GetWindowRect` parity);
+  wmctrl still supplies id/desktop/pid/class/title.
+- **§5.4 `game_start` note** — the brief/plan string ("cursor locked to
+  center; use /api/game/move for camera look; X11 cannot clip the cursor —
+  the game must capture the pointer") is authoritative; the §5.4 quoted
+  phrase was a paraphrase.
+- **§5.1 key names** — `super`/`meta` are policy-normalized to `win` for the
+  forbidden-key checks (strict Windows parity: unsendable in any combo on
+  either platform); multi-part names like `alt+f4` are rejected with
+  `ValueError` (→ HTTP 400) in the single-key functions — chord grammar
+  belongs to the hotkey action.

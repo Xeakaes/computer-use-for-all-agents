@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg"></a>
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11-blue">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20%7C%20Linux%20X11-blue">
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-informational">
   <a href="https://github.com/features/actions"><img alt="CI: security tests" src="https://img.shields.io/badge/CI-security%20tests-brightgreen"></a>
   <a href="#mcp-support-one-click-cloud-agents"><img alt="MCP" src="https://img.shields.io/badge/MCP-compatible-9370DB"></a>
@@ -75,6 +75,7 @@ tasks.
 - [Features](#features)
 - [Architecture](#architecture)
 - [Installation](#installation)
+- [Linux (X11)](#linux-x11)
 - [Quick Start](#quick-start)
 - [API Reference](#api-reference)
   - [Authentication](#authentication)
@@ -161,7 +162,7 @@ tasks.
 ┌──────────────────────────────────────────────┐
 │              backends/ (pluggable)           │
 │  WindowsBackend  │ LinuxBackend │ MacOSBackend│
-│      (full)      │   (stub)     │   (stub)   │
+│      (full)      │    (X11)     │   (stub)   │
 └──────────────────────────────────────────────┘
 ```
 
@@ -226,9 +227,95 @@ pip install -r requirements.txt
 
 ### System Requirements
 
-- **OS:** Windows 10/11 (x64)
+- **OS:** Windows 10/11 (x64), or Linux (Ubuntu/Mint family, X11 session —
+  see [Linux (X11)](#linux-x11))
 - **Python:** 3.10+
 - **Display:** Any resolution; the system adapts automatically
+
+---
+
+## Linux (X11)
+
+Linux is **supported with limits** (ROADMAP Phase 5) — tested on Linux Mint
+with Cinnamon in an X11 session; other X11 desktop environments are expected
+to work. Windows remains the reference backend.
+
+### Requirements
+
+- **OS:** Ubuntu / Linux Mint family (apt-based)
+- **Session:** X11 — check this first:
+
+```bash
+echo $XDG_SESSION_TYPE    # must print: x11
+```
+
+- **Wayland?** Not supported — the server fails fast instead of half-working
+  (see [Known limitations](#known-limitations-linux-x11)).
+- **System packages** (installed by the setup script below):
+
+```bash
+sudo apt install -y xdotool wmctrl imagemagick python3-venv python3-tk python3-dev
+```
+
+  `xdotool` drives input/focus, `wmctrl` window management, ImageMagick's
+  `import` captures window pixels (optional — an mss region fallback exists),
+  `python3-venv` creates the virtualenv and `python3-dev` lets `evdev`
+  (game mode) compile from source.
+
+### One-command setup
+
+```bash
+cd screen-control
+./install-linux.sh
+```
+
+The script is idempotent and checks, in order: Wayland (exits with a clear
+message), `DISPLAY`, the apt packages, the `.venv` virtualenv,
+`pip install -r requirements.txt`, and finally reports whether game mode can
+work.
+
+### uinput permissions (game mode)
+
+Game mode writes to `/dev/uinput`. Verify access with:
+
+```bash
+[ -w /dev/uinput ] && echo "game mode: OK" || echo "game mode: unavailable"
+```
+
+If it is unavailable, either remediation works (spec §5.4):
+
+```bash
+sudo usermod -aG input $USER        # then log out and back in
+# — or a udev rule:
+echo 'KERNEL=="uinput", MODE="0660", GROUP="input"' | sudo tee /etc/udev/rules.d/99-uinput.rules
+```
+
+Everything except game mode works without this access.
+
+### Run
+
+```bash
+./start-server.sh
+# → same API as Windows: http://127.0.0.1:8745 (X-Auth-Token from .token)
+```
+
+### Known limitations (Linux X11)
+
+| Limitation | Detail |
+|---|---|
+| **X11 only** | On Wayland the backend fails fast: `ApiError("UNSUPPORTED_DISPLAY_SERVER")` (HTTP **501**), and `server.py` prints that message and exits instead of serving. Fix: log out → session chooser at the login screen → "Cinnamon on Xorg". Wayland support is ROADMAP Phase 6. |
+| **Background input = focus-first** | Every `/api/window/post` action focuses the target window first, then sends input globally (X11 has no reliable posted-message path) — i.e. focus stealing. `capabilities.background_input` is `false`. |
+| **No cursor clip in game mode** | X11 cannot clip the cursor — the game must capture the pointer itself. Emergency stop: physical `Esc`/`Alt+Tab` or `POST /api/release_all`. |
+| **No virtual desktops** | `capabilities.virtual_desktops` is `false`; `GET /api/desktops` and `POST /api/desktop` return **503**. |
+| **Fractional scaling untested** | The verification display runs at scaling 1.0; coordinates under fractional scaling are unverified. |
+| **`capture_window` (window capture)** | **Client area only**, for both `client=0` and `client=1` — decorations are not captured (on Windows `client=0` includes the frame). Uses ImageMagick `import` when installed (usually the window's own pixels even when occluded); otherwise falls back to an mss region grab of the window's rectangle, so **an occluded window shows whatever is on top**. Failures map to HTTP 409. |
+| **Window geometry source** | `rect` comes from `xwininfo -root -tree` absolute bounds — outer/frame bounds (Windows `GetWindowRect` parity); `client_to_screen` uses `xwininfo` "Absolute upper-left". |
+| **`window_hotkey` response** | Returns `{"ok","vk","vks"}`; for the hotkey action `vk` (X11 keysym) exists **only** on Linux (Windows returns `{"ok","vks"}`) — cross-platform code must read `vks`. |
+
+> **Agent note:** OCR is the slowest read (≈5–6 s full-screen measured, worse
+> on busy screens). Prefer `/api/vision/frame` or `/api/stream` for repeated
+> reads, use region OCR, and batch reads between actions — see
+> [AGENT_GUIDE.md → Linux (X11) Usage](AGENT_GUIDE.md#linux-x11-usage).
 
 ---
 
@@ -274,13 +361,15 @@ stub backend), `"optional"` (depends on an optional dependency).
 | Mouse control | Full | Full | Restricted | Accessibility permission |
 | Keyboard control | Full | Full | Restricted | Accessibility permission |
 | Window enumeration | Full | WM-dependent | Limited | Accessibility/API-dependent |
-| Background input | Strong | WM/app-dependent | Usually unavailable | Limited |
+| Background input | Strong | Focus-first (stealing) | Usually unavailable | Limited |
 | Virtual desktops | Supported | DE/WM-dependent | DE/WM-dependent | Spaces-specific |
 | Game mode | Supported | Experimental | Limited | Experimental |
 
-> Linux and macOS backends are currently **fail-closed stubs**: every
-> operation returns `BACKEND_UNAVAILABLE` (501) until implemented
-> (ROADMAP Phases 5–7). Windows is the reference backend.
+> **Linux X11 is implemented and supported with limits** — setup, requirements
+> and the full limitations list are in [Linux (X11)](#linux-x11). Wayland
+> fails fast with `UNSUPPORTED_DISPLAY_SERVER` (501), and **macOS** remains a
+> fail-closed stub: every operation returns `BACKEND_UNAVAILABLE` (501) until
+> ROADMAP Phase 7. Windows is the reference backend.
 
 ### Authentication
 
@@ -555,6 +644,11 @@ curl -X POST http://127.0.0.1:8745/api/window -H "X-Auth-Token: $TOKEN" \
 Read and control windows **without stealing focus** — the user keeps working
 on their main desktop.
 
+> **Linux (X11) note:** background control there is *focus-first* — the
+> target window is focused, then input is sent globally (focus stealing).
+> Only background **capture** is truly focus-free. See
+> [Known limitations](#known-limitations-linux-x11).
+
 #### `GET /api/window/capture`
 
 Capture a window via PrintWindow (works even on another virtual desktop).
@@ -732,9 +826,11 @@ A dedicated, comprehensive guide for AI agents (LLMs, vision models, automation
 frameworks) is available in **[AGENT_GUIDE.md](AGENT_GUIDE.md)**.
 
 It covers:
+- Environment routing — find Windows vs Linux (X11/Wayland) first
 - Perceive-act loop (read → plan → act → verify)
 - Focus guard (`expect_hwnd`) to prevent wrong-window accidents
 - App automation and game control workflows
+- Linux (X11) usage: slow-OCR batching, capture semantics, game-mode caveats
 - Vision access for image-capable models
 - Text-based motion detection
 - Bandwidth optimization
@@ -1166,6 +1262,21 @@ The system uses `SendInput + KEYEVENTF_UNICODE` which is layout-independent.
 If characters still don't appear, the target app may not support Unicode
 input — try `POST /api/window/post` with `action: "type"` instead.
 
+### Linux: server exits immediately with "Wayland display server detected"
+
+Expected on a Wayland session — the backend fails fast with
+`UNSUPPORTED_DISPLAY_SERVER` (501) instead of half-working. Log out, choose
+the X11 session ("Cinnamon on Xorg") at the login screen, then start the
+server again. See [Linux (X11)](#linux-x11).
+
+### Linux: "xdotool is not installed or not on PATH" (501)
+
+The X11 helper tools are missing. Install them (or re-run the installer):
+
+```bash
+sudo apt install xdotool wmctrl
+```
+
 ---
 
 ## Project Structure
@@ -1178,7 +1289,9 @@ screen-control/
 │   └── errors.py        # ApiError envelope + error codes
 ├── backends/            # OS implementations behind PlatformBackend
 │   ├── windows.py       # Reference backend (moved from control.py)
-│   ├── linux.py         # Fail-closed stub (ROADMAP Phase 5)
+│   ├── linux.py         # X11 backend: xdotool/wmctrl + mss + uinput (Phase 5)
+│   ├── imageops.py      # Shared PIL helpers (frame diff, JPEG, scaling)
+│   ├── uinput.py        # Virtual input device for Linux game mode
 │   ├── macos.py         # Fail-closed stub (ROADMAP Phase 7)
 │   ├── fake.py          # In-memory backend for tests
 │   └── forbidden.py     # Shared blocked-key policy
@@ -1192,7 +1305,10 @@ screen-control/
 ├── requirements.txt     # Python dependencies
 ├── start-server.bat     # One command: REST + MCP + cloud tunnel (Windows)
 ├── stop-server.bat      # Stop all three processes
+├── install-linux.sh     # One-command Linux setup (apt, venv, uinput check)
+├── start-server.sh      # Linux launcher (.venv/bin/python server.py)
 ├── test-security.py     # Security + game-mode test suite (34 checks)
+├── test-linux.py        # Live Linux X11 acceptance suite (7 items)
 ├── test-game.py         # Live game-mechanics test (app launch → draw → safe close)
 ├── test-endtoend.py     # End-to-end test: open Notepad → type → save → verify
 ├── .github/workflows/   # CI: runs the security suite on every push
@@ -1277,6 +1393,20 @@ python test-game.py
 
 > **Note:** This test launches a real application.  It handles cleanup
 > automatically (sends WM_CLOSE and clicks "Don't Save" if a dialog appears).
+
+### Live Linux acceptance test (Linux X11 only)
+
+Seven-item live check of the Linux backend: mouse move/click, typing +
+hotkey, screenshot, OCR, window list/focus, game mode (uinput) and the
+native-game item (printed as `SKIP` — no Linux game is installed). Needs a
+running server and a real X11 session; every helper window is pid-unique and
+only those are ever focused or clicked.
+
+```bash
+cd screen-control
+./start-server.sh &              # server must be running
+.venv/bin/python test-linux.py   # → "RESULT: 6 passed, 0 failed"; item 7 prints SKIP
+```
 
 ---
 

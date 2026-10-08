@@ -8,6 +8,7 @@
 
 ## Table of Contents
 
+- [Find Your Environment First](#find-your-environment-first)
 - [Quick Start for Agents](#quick-start-for-agents)
 - [Performance Note](#performance-note)
 - [MCP Mode (Native Tool Calling)](#mcp-mode-native-tool-calling)
@@ -23,12 +24,59 @@
 - [Focus-Free (Background) Control](#focus-free-background-control)
 - [Virtual Desktops](#virtual-desktops)
 - [Game Mode](#game-mode)
+- [Linux (X11) Usage](#linux-x11-usage)
 - [Vision Access for Image Models](#vision-access-for-image-models)
 - [Text-Based Motion Detection](#text-based-motion-detection)
 - [Bandwidth Optimization](#bandwidth-optimization)
 - [Error Handling](#error-handling)
 - [Safety Guarantees](#safety-guarantees)
 - [Complete curl Examples](#complete-curl-examples)
+
+---
+
+## Find Your Environment First
+
+The API surface is identical everywhere, but the usage rules are not. Before
+you send anything, route yourself — this takes one request:
+
+```bash
+# 1. Server-side truth: ask the server what it is
+curl -H "X-Auth-Token: $TOKEN" http://127.0.0.1:8745/api/capabilities
+# → {"ok": true, "backend": "windows" | "linux" | "macos",
+#    "capabilities": {"platform": "...", "screen_capture": ..., ...}}
+```
+
+If the server cannot be reached, fall back to host OS detection (`win32` →
+Windows, `linux` → Linux, `darwin` → macOS).
+
+| `platform` | What to do |
+|---|---|
+| **`windows`** | You are on the reference backend. **Every section of this guide below applies as written, with no platform caveats** — start at [Quick Start for Agents](#quick-start-for-agents); pay special attention to the [Focus Guard](#focus-guard-expect_hwnd) and [Game Mode](#game-mode) (the cursor is physically clipped to the screen center while game mode runs). Nothing in this guide's Linux sections applies to you. |
+| **`linux`** | Determine the desktop session (step 2), then read [Linux (X11) Usage](#linux-x11-usage) — it changes how you read the screen, close windows, capture windows and run game mode. Follow the rest of this guide with those notes in mind. |
+| **`macos`** | Stop: the backend is a fail-closed stub (ROADMAP Phase 7). Every action returns `BACKEND_UNAVAILABLE` (501); do not retry. |
+
+**Linux: determine the session and desktop environment**
+
+```bash
+echo "$XDG_SESSION_TYPE" "$XDG_CURRENT_DESKTOP"
+# e.g.  x11 Cinnamon
+```
+
+- **`x11`** — supported (tested on Cinnamon/Muffin; other X11 desktop
+  environments are expected to work). Go to
+  [Linux (X11) Usage](#linux-x11-usage), then follow the rest of this guide
+  with those platform notes in mind.
+- **`wayland`** — expect an immediate, hard failure, never silent
+  degradation: the Linux backend refuses to construct with
+  `ApiError("UNSUPPORTED_DISPLAY_SERVER")` (HTTP **501**), and at startup
+  `server.py` prints that message plus its remediation to stderr and exits
+  (code 2) instead of serving — so your probe may simply fail with
+  *connection refused*. Either way this is **expected**: Wayland is out of
+  scope (ROADMAP Phase 6). Do **not** retry blindly; the only fix is
+  starting an X11 session (log out → session chooser at the login screen →
+  "Cinnamon on Xorg"), then starting the server again.
+- **empty / unknown** — treat as "no display": X-dependent actions fail
+  closed with `BACKEND_UNAVAILABLE` (501) rather than acting on guesses.
 
 ---
 
@@ -636,6 +684,92 @@ curl -X POST http://127.0.0.1:8745/api/game -H "X-Auth-Token: $TOKEN" \
 curl -X POST http://127.0.0.1:8745/api/release_all -H "X-Auth-Token: $TOKEN" \
   -H "Content-Type: application/json" -d '{}'
 ```
+
+---
+
+## Linux (X11) Usage
+
+Applies when `platform` is `linux` and the session is X11 — see
+[Find Your Environment First](#find-your-environment-first). The endpoints,
+request/response shapes and safety rules are unchanged, so Windows-derived
+scripts keep working; what changes is *how* you must use them.
+
+### Batch your reads — OCR is slow here
+
+A full-screen `POST /api/ocr` is the slowest read you can make: **≈5–6 s**
+measured on the reference machine, and it climbs to tens of seconds on a
+busy screen — while `GET /api/vision/frame` answers in ≈40 ms (measured).
+Do not OCR after every action.
+
+- Prefer `GET /api/vision/frame?scale=0.5&gray=1` (one JPEG) or
+  `GET /api/stream` (MJPEG) for repeated reads — they return in milliseconds.
+- Use `POST /api/vision/diff` when you only need "what changed".
+- When you do need OCR, always pass a `"region"` — small crops are ~10×
+  faster — and batch several reads together between actions:
+
+```bash
+# One region read instead of a full-screen OCR
+curl -X POST http://127.0.0.1:8745/api/ocr -H "X-Auth-Token: $TOKEN" \
+  -H "Content-Type: application/json" -d '{"region":[0,0,800,100]}'
+```
+
+### Use the focus guard on every input call
+
+`expect_hwnd` works exactly as documented in
+[Focus Guard](#focus-guard-expect_hwnd) (mismatch → 409, input refused).
+Always pass it when typing or pressing keys — a shared desktop changes focus
+under you.
+
+### Close windows only through the API
+
+`POST /api/window {"action":"close"}` is the verified close path. **Never**
+send a blind `Alt+F4`: it is blocked server-side on Linux too, including
+chord/alias normalization — `alt+f4` is split and `super`/`meta` are treated
+as `win` before the forbidden-key check, so no spelling of a banned combo
+gets through (403 before any X call). Multi-part names like `"alt+f4"` in
+single-key actions (`press`/`down`/`up`) are rejected with 400 — chords
+belong in the `hotkey` action.
+
+### Game mode caveats (no cursor clip on X11)
+
+- `POST /api/game {"action":"start"}` returns the screen `center` and a
+  `note`; on X11 the cursor is **not** physically clipped — **the game must
+  capture the pointer itself**, or relative look will feel wrong. Relative
+  moves still arrive through the virtual uinput device (game mode needs
+  write access to `/dev/uinput`, else `PERMISSION_REQUIRED`).
+- Emergency stop is unchanged: **physical `Esc` / `Alt+Tab`** (hardware
+  input, always works) or `POST /api/release_all`; the 30 s watchdog still
+  applies.
+
+### This is a shared desktop
+
+A human may be using the same session, and any window can be fullscreen.
+Before focusing, typing or clicking, check `GET /api/windows`: act only on
+the window you identified, and respect the `focused` flag (Linux does not
+report a `desktop` field — virtual desktops are unsupported here, see
+`capabilities.virtual_desktops`).
+
+### Capture semantics (`GET /api/window/capture`)
+
+- The image is the window's **client area only** — no title bar or borders,
+  for both `client=0` and `client=1` (on Windows `client=0` includes the
+  frame). The captured origin matches `client_to_screen`, so OCR region
+  coordinates never drift.
+- With ImageMagick installed, an occluded window usually still yields its
+  own pixels. Without it the backend falls back to an mss grab of the
+  window's screen rectangle — **an occluded window then shows whatever is
+  on top of it**. If the capture looks wrong, focus the window
+  (`POST /api/window {"action":"focus"}`) and capture again.
+
+### Response details that differ from Windows
+
+| Thing | Linux behavior | What you should do |
+|---|---|---|
+| `POST /api/window` `action:"hotkey"` | returns `{"ok","vk","vks"}`; for the hotkey action `vk` (first key's X11 keysym) exists **only** on Linux — Windows returns `{"ok","vks"}` | read `vks` (the array) — present on both platforms; never compare `vk` values across platforms (Win32 VK on Windows vs X11 keysym on Linux) |
+| `rect` in `GET /api/windows` | outer/frame bounds from `xwininfo -root -tree` (includes the reparenting frame + shadow ring), Windows `GetWindowRect` parity | treat `rect` as the outer box, same as on Windows |
+| `client_to_screen` (clicks/drags through `/api/window/post`) | computed from `xwininfo` "Absolute upper-left" | no action needed — coordinates are root-absolute |
+| `/api/window/post` (background control) | **focus-first**: the target is focused, then input is sent globally — X11 has no reliable posted-message path | expect focus stealing; `capabilities.background_input` is `false`. Read background via `GET /api/window/capture` instead |
+| `/api/desktops`, `/api/desktop` | HTTP **503** (`pyvda` is Windows-only) | do not use; plan around a single desktop |
 
 ---
 
