@@ -628,10 +628,15 @@ class LinuxBackend(PlatformBackend):
         if width <= 0 or height <= 0:
             raise RuntimeError(
                 f"window {hex(hwnd)} has invalid size {width}x{height}")
-        with mss.MSS() as sct:
-            raw = sct.grab({"left": left, "top": top,
-                            "width": width, "height": height})
-        return Image.frombytes("RGB", raw.size, raw.rgb)
+        try:
+            with mss.MSS() as sct:
+                raw = sct.grab({"left": left, "top": top,
+                                "width": width, "height": height})
+            return Image.frombytes("RGB", raw.size, raw.rgb)
+        except Exception as exc:
+            raise RuntimeError(
+                f"screen grab failed for window {hex(hwnd)}: {exc}"
+            ) from exc
 
     # mouse
     def mouse_move(self, x: int, y: int, duration: float = 0.15) -> None:

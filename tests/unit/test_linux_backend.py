@@ -936,6 +936,33 @@ class TestLinuxCaptureContracts(unittest.TestCase):
         self.assertIn("import failed", str(ctx.exception))
         self.assertIn("0x7ffffffe", str(ctx.exception))
 
+    def test_fallback_grab_failure_raises_runtime_error(self):
+        geometry = ('xwininfo: Window id: 0x1000 "Offscreen"\n'
+                    '\n'
+                    '  Absolute upper-left X:  -120\n'
+                    '  Absolute upper-left Y:  82\n'
+                    '  Width: 800\n'
+                    '  Height: 600\n')
+        instance = mock.MagicMock()
+        grab = instance.__enter__.return_value.grab
+        grab.side_effect = linux_mod.mss.ScreenShotError(
+            "X error while grabbing the region")
+        with mock.patch("backends.linux.shutil.which", return_value=None):
+            with mock.patch("backends.linux.run_x11",
+                            return_value=geometry):
+                with mock.patch("backends.linux.mss.MSS",
+                                return_value=instance):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        LinuxBackend().capture_window(0x1000)
+        self.assertNotIsInstance(ctx.exception,
+                                 linux_mod.mss.ScreenShotError)
+        self.assertIsInstance(ctx.exception.__cause__,
+                              linux_mod.mss.ScreenShotError)
+        self.assertIn("screen grab failed", str(ctx.exception))
+        self.assertIn("0x1000", str(ctx.exception))
+        grab.assert_called_once_with({"left": -120, "top": 82,
+                                      "width": 800, "height": 600})
+
 
 @unittest.skipUnless(os.environ.get("DISPLAY"), "requires an X11 DISPLAY")
 class TestLinuxLiveCapture(unittest.TestCase):
