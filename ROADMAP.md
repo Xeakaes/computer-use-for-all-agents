@@ -45,7 +45,7 @@
 | Keyboard control | Full | Full | Restricted | Accessibility permission |
 | Window enumeration | Full | WM-dependent | Limited | Accessibility/API-dependent |
 | Background input | Strong | WM/app-dependent | Usually unavailable | Limited |
-| Virtual desktops | Supported | DE/WM-dependent | DE/WM-dependent | Spaces-specific |
+| Virtual desktops | Supported | No (503) | DE/WM-dependent | Spaces-specific |
 | Game mode | Supported | Experimental | Limited | Experimental |
 
 ---

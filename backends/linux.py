@@ -969,12 +969,12 @@ class LinuxBackend(PlatformBackend):
         self.focus_window(hwnd)
         center = None
         try:
-            info = _window_info(hwnd)
-        except (ApiError, RuntimeError):
-            info = None
-        if info:
-            left, top, right, bottom = info["rect"]
-            center = ((left + right) // 2, (top + bottom) // 2)
+            text = run_x11(["xwininfo", "-id", hex(hwnd)])
+        except RuntimeError:
+            text = ""
+        origin, size = _xwininfo_origin(text), _xwininfo_size(text)
+        if origin and size:
+            center = (origin[0] + size[0] // 2, origin[1] + size[1] // 2)
         mouse_scroll(int(clicks), *(center or (None, None)))
         return {"ok": True, "clicks": int(clicks)}
 

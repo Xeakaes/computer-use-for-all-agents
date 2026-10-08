@@ -810,7 +810,9 @@ class TestLinuxWindowContracts(unittest.TestCase):
         self.geometry = ('xwininfo: Window id: 0x1000 "Known Window"\n'
                          '\n'
                          '  Absolute upper-left X:  50\n'
-                         '  Absolute upper-left Y:  82\n')
+                         '  Absolute upper-left Y:  82\n'
+                         '  Width: 800\n'
+                         '  Height: 600\n')
         self.tree = (
             'xwininfo: Window id: 0x1000 "Known Window"\n'
             '\n'
@@ -1009,7 +1011,7 @@ class TestLinuxWindowContracts(unittest.TestCase):
         self.assertEqual(result, {"ok": True, "clicks": -2})
         cmds = self.calls()
         self.assertEqual(cmds[-2], ["xdotool", "mousemove", "--sync",
-                                    "500", "500"])
+                                    "450", "382"])
         self.assertEqual(cmds[-1], ["xdotool", "click", "--repeat", "2", "5"])
 
     def test_window_drag_returns_from_to(self):
