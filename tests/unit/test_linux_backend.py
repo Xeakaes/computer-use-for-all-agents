@@ -79,6 +79,15 @@ class TestLinuxBackend(unittest.TestCase):
         with self.assertRaises(PermissionError):
             backend.assert_allowed(["alt", "f4"])
 
+    def test_assert_allowed_refuses_chord_string_and_super_alias(self):
+        with mock.patch.dict(os.environ,
+                             {"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"}):
+            backend = LinuxBackend()
+        with self.assertRaises(PermissionError):
+            backend.assert_allowed(["alt+f4"])
+        with self.assertRaises(PermissionError):
+            backend.assert_allowed(["super"])
+
     def test_stub_backends_is_macos_only(self):
         path = os.path.join(os.path.dirname(__file__),
                             "test_stub_backends.py")
@@ -255,6 +264,42 @@ class TestLinuxInputContracts(unittest.TestCase):
         with self.assertRaises(PermissionError):
             key_hotkey("alt", "f4")
         self.run.assert_not_called()
+
+    def test_key_press_chord_string_refused_before_any_invocation(self):
+        with self.assertRaises(ValueError) as ctx:
+            key_press("alt+f4")
+        self.assertIn("chord", str(ctx.exception))
+        self.assertIn("hotkey", str(ctx.exception))
+        self.run.assert_not_called()
+
+    def test_key_press_super_refused_as_win(self):
+        with self.assertRaises(PermissionError):
+            key_press("super")
+        self.run.assert_not_called()
+
+    def test_key_press_delete_refused_before_any_invocation(self):
+        with self.assertRaises(PermissionError):
+            key_press("delete")
+        self.run.assert_not_called()
+
+    def test_key_press_lone_plus_is_a_key_name(self):
+        key_press("+")
+        self.assertEqual(self.calls(), [["xdotool", "key", "+"]])
+
+    def test_key_hotkey_super_l_refused_before_any_invocation(self):
+        with self.assertRaises(PermissionError):
+            key_hotkey("super", "l")
+        self.run.assert_not_called()
+
+    def test_key_hotkey_single_chord_string_refused(self):
+        with self.assertRaises(PermissionError):
+            key_hotkey(*["alt+f4"])
+        self.run.assert_not_called()
+
+    def test_key_hotkey_allowed_super_chord_still_sends(self):
+        key_hotkey("super", "page_up")
+        self.assertEqual(self.calls(),
+                         [["xdotool", "key", "super+page_up"]])
 
     def test_type_text_one_type_call_per_segment(self):
         type_text("a\nb")
@@ -674,6 +719,21 @@ class TestLinuxWindowContracts(unittest.TestCase):
         self.assertEqual(self.calls(), [])
         with self.assertRaises(PermissionError):
             self.backend.window_hotkey(0x1000, ["alt", "f4"])
+        self.assertEqual(self.calls(), [])
+
+    def test_window_key_and_hotkey_refuse_alias_vectors_before_any_call(self):
+        with self.assertRaises(ValueError) as ctx:
+            self.backend.window_key(0x1000, "alt+f4")
+        self.assertIn("chord", str(ctx.exception))
+        self.assertEqual(self.calls(), [])
+        with self.assertRaises(PermissionError):
+            self.backend.window_key(0x1000, "super")
+        self.assertEqual(self.calls(), [])
+        with self.assertRaises(PermissionError):
+            self.backend.window_hotkey(0x1000, ["super", "l"])
+        self.assertEqual(self.calls(), [])
+        with self.assertRaises(PermissionError):
+            self.backend.window_hotkey(0x1000, ["alt+f4"])
         self.assertEqual(self.calls(), [])
 
     def test_window_hotkey_returns_chord_keysyms(self):

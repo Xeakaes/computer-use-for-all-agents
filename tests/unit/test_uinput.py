@@ -2,7 +2,10 @@
 import os
 import unittest
 
-import evdev
+try:
+    import evdev
+except ImportError:
+    evdev = None
 
 from backends.uinput import (
     UInputDevice, button_to_code, key_to_code, uinput_permission_error,
@@ -10,6 +13,7 @@ from backends.uinput import (
 
 
 class TestKeyToCode(unittest.TestCase):
+    @unittest.skipUnless(evdev, "python-evdev is not importable here")
     def test_key_to_code_aliases(self):
         self.assertEqual(key_to_code("ctrl"), evdev.ecodes.KEY_LEFTCTRL)
         self.assertEqual(key_to_code("w"), evdev.ecodes.KEY_W)
@@ -22,6 +26,7 @@ class TestKeyToCode(unittest.TestCase):
 
 
 class TestButtonToCode(unittest.TestCase):
+    @unittest.skipUnless(evdev, "python-evdev is not importable here")
     def test_button_to_code(self):
         self.assertEqual(button_to_code("left"), evdev.ecodes.BTN_LEFT)
         self.assertEqual(button_to_code("right"), evdev.ecodes.BTN_RIGHT)

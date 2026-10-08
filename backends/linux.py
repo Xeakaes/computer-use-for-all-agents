@@ -13,7 +13,7 @@ import subprocess
 import threading
 import time
 
-from backends.forbidden import assert_forbidden
+from backends.forbidden import FORBIDDEN_HOTKEYS, assert_forbidden
 from core.backends import PlatformBackend
 from core.errors import ApiError
 
@@ -214,15 +214,54 @@ def mouse_up(button: str = "left") -> None:
         _held_buttons.pop(button, None)
 
 
+_POLICY_ALIASES = {"super": "win", "meta": "win"}
+
+
+def _flatten_key(name: str) -> list[str]:
+    """Split an xdotool chord string into parts; a lone '+' is a key name."""
+    if len(name) > 1 and "+" in name:
+        return name.split("+")
+    return [name]
+
+
+def _assert_allowed_keys(keys) -> None:
+    """Enforce the shared forbidden-key policy on flattened key names.
+
+    A lone name is checked as the key the policy bans (super/meta are win
+    to the policy). Multi-key requests keep their own names unless the
+    alias view matches a forbidden hotkey, so super+l is caught as win+l
+    while an allowed super chord (super+page_up) stays sendable. The
+    names sent to xdotool are never rewritten.
+    """
+    flat = []
+    for key in keys:
+        flat.extend(_flatten_key(key))
+    aliased = [_POLICY_ALIASES.get(part.lower(), part) for part in flat]
+    if (len(flat) == 1
+            or frozenset(part.lower() for part in aliased)
+            in FORBIDDEN_HOTKEYS):
+        assert_forbidden(aliased)
+    else:
+        assert_forbidden(flat)
+
+
+def _assert_single_allowed(key: str) -> None:
+    """Refuse chord strings for single-key actions, then apply the policy."""
+    if len(_flatten_key(key)) > 1:
+        raise ValueError(f"{key!r} is a chord; chords go through the "
+                         f"hotkey action")
+    _assert_allowed_keys([key])
+
+
 def key_press(key: str) -> None:
     """Press and release a single key."""
-    assert_forbidden([key])
+    _assert_single_allowed(key)
     run_x11(["xdotool", "key", xdotool_key(key)])
 
 
 def key_down(key: str) -> None:
     """Hold a key down (tracked for release_all / watchdog)."""
-    assert_forbidden([key])
+    _assert_single_allowed(key)
     run_x11(["xdotool", "keydown", xdotool_key(key)])
     with _held_lock:
         _held_keys[key] = "x11"
@@ -230,7 +269,7 @@ def key_down(key: str) -> None:
 
 def key_up(key: str) -> None:
     """Release a held key."""
-    assert_forbidden([key])
+    _assert_single_allowed(key)
     run_x11(["xdotool", "keyup", xdotool_key(key)])
     with _held_lock:
         _held_keys.pop(key, None)
@@ -238,7 +277,7 @@ def key_up(key: str) -> None:
 
 def key_hotkey(*keys: str) -> None:
     """Press a chord in one xdotool call (e.g. key_hotkey('ctrl', 'c'))."""
-    assert_forbidden(list(keys))
+    _assert_allowed_keys(keys)
     chord = "+".join(xdotool_key(key) for key in keys)
     run_x11(["xdotool", "key", chord])
 
@@ -529,7 +568,7 @@ class LinuxBackend(PlatformBackend):
 
     # keyboard
     def assert_allowed(self, keys) -> None:
-        assert_forbidden(keys)
+        _assert_allowed_keys(keys)
 
     def key_press(self, key: str) -> None:
         self.require_x("key_press")
@@ -690,7 +729,7 @@ class LinuxBackend(PlatformBackend):
         return {"ok": True, "chars": len(text)}
 
     def window_key(self, hwnd: int, key: str) -> dict:
-        assert_forbidden([key])
+        _assert_single_allowed(key)
         vk = keysym_for(key)
         self.require_x("window_key")
         self.focus_window(hwnd)
@@ -699,7 +738,7 @@ class LinuxBackend(PlatformBackend):
 
     def window_hotkey(self, hwnd: int, keys) -> dict:
         keys = list(keys)
-        assert_forbidden(keys)
+        _assert_allowed_keys(keys)
         vks = [keysym_for(key) for key in keys]
         self.require_x("window_hotkey")
         self.focus_window(hwnd)
