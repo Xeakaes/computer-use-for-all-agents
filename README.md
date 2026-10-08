@@ -312,9 +312,9 @@ Everything except game mode works without this access.
 | **Window geometry source** | `rect` comes from `xwininfo -root -tree` absolute bounds — outer/frame bounds (Windows `GetWindowRect` parity); `client_to_screen` uses `xwininfo` "Absolute upper-left". |
 | **`window_hotkey` response** | Returns `{"ok","vk","vks"}`; for the hotkey action `vk` (X11 keysym) exists **only** on Linux (Windows returns `{"ok","vks"}`) — cross-platform code must read `vks`. |
 
-> **Agent note:** OCR is the slowest read (≈5–6 s full-screen measured, worse
-> on busy screens). Prefer `/api/vision/frame` or `/api/stream` for repeated
-> reads, use region OCR, and batch reads between actions — see
+> **Agent note:** OCR is the slowest read (≈5–6 s full-screen measured).
+> Prefer `/api/vision/frame` or `/api/stream` for repeated reads, use region
+> OCR, and batch reads between actions — see
 > [AGENT_GUIDE.md → Linux (X11) Usage](AGENT_GUIDE.md#linux-x11-usage).
 
 ---

@@ -696,10 +696,9 @@ scripts keep working; what changes is *how* you must use them.
 
 ### Batch your reads — OCR is slow here
 
-A full-screen `POST /api/ocr` is the slowest read you can make: **≈5–6 s**
-measured on the reference machine, and it climbs to tens of seconds on a
-busy screen — while `GET /api/vision/frame` answers in ≈40 ms (measured).
-Do not OCR after every action.
+A full-screen `POST /api/ocr` is the slowest read you can make — **≈5–6 s**
+measured on the reference machine — while `GET /api/vision/frame` answers
+in ≈40 ms (measured). Do not OCR after every action.
 
 - Prefer `GET /api/vision/frame?scale=0.5&gray=1` (one JPEG) or
   `GET /api/stream` (MJPEG) for repeated reads — they return in milliseconds.
