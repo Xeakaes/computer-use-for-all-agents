@@ -13,7 +13,7 @@ import subprocess
 import threading
 import time
 
-from backends.forbidden import FORBIDDEN_HOTKEYS, assert_forbidden
+from backends.forbidden import assert_forbidden
 from core.backends import PlatformBackend
 from core.errors import ApiError
 
@@ -227,22 +227,16 @@ def _flatten_key(name: str) -> list[str]:
 def _assert_allowed_keys(keys) -> None:
     """Enforce the shared forbidden-key policy on flattened key names.
 
-    A lone name is checked as the key the policy bans (super/meta are win
-    to the policy). Multi-key requests keep their own names unless the
-    alias view matches a forbidden hotkey, so super+l is caught as win+l
-    while an allowed super chord (super+page_up) stays sendable. The
-    names sent to xdotool are never rewritten.
+    Every name is aliased to the policy's view (super/meta are win) before
+    the check, so those keys are unsendable in any context — lone, chord,
+    or any combo — exactly like win on Windows (strict parity). The names
+    sent to xdotool are never rewritten for keys that pass policy.
     """
     flat = []
     for key in keys:
         flat.extend(_flatten_key(key))
-    aliased = [_POLICY_ALIASES.get(part.lower(), part) for part in flat]
-    if (len(flat) == 1
-            or frozenset(part.lower() for part in aliased)
-            in FORBIDDEN_HOTKEYS):
-        assert_forbidden(aliased)
-    else:
-        assert_forbidden(flat)
+    assert_forbidden([_POLICY_ALIASES.get(part.lower(), part)
+                      for part in flat])
 
 
 def _assert_single_allowed(key: str) -> None:

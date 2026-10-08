@@ -296,10 +296,10 @@ class TestLinuxInputContracts(unittest.TestCase):
             key_hotkey(*["alt+f4"])
         self.run.assert_not_called()
 
-    def test_key_hotkey_allowed_super_chord_still_sends(self):
-        key_hotkey("super", "page_up")
-        self.assertEqual(self.calls(),
-                         [["xdotool", "key", "super+page_up"]])
+    def test_key_hotkey_super_chord_refused_before_any_invocation(self):
+        with self.assertRaises(PermissionError):
+            key_hotkey("super", "page_up")
+        self.run.assert_not_called()
 
     def test_type_text_one_type_call_per_segment(self):
         type_text("a\nb")
