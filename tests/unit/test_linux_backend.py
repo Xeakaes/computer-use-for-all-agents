@@ -752,12 +752,16 @@ class TestLinuxKillAndProcess(unittest.TestCase):
                 self.assertIn("output", result)
                 kill.assert_not_called()
 
+    @unittest.skipUnless(sys.platform.startswith("linux"),
+                         "signal.SIGKILL is Linux-only")
     def test_kill_process_sends_sigkill(self):
         with mock.patch("backends.linux.os.kill") as kill:
             result = LinuxBackend().kill_process(4321)
         self.assertEqual(result, {"ok": True, "output": ""})
         kill.assert_called_once_with(4321, signal.SIGKILL)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"),
+                         "signal.SIGKILL is Linux-only")
     def test_kill_process_clean_error_on_missing_pid(self):
         with mock.patch("backends.linux.os.kill",
                         side_effect=ProcessLookupError(3, "No such process")):
