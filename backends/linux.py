@@ -11,6 +11,7 @@ import io
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -903,10 +904,14 @@ class LinuxBackend(PlatformBackend):
         if pid == os.getpid():
             return {"ok": False, "output": "refusing to kill own process"}
         try:
-            output = run_x11(["kill", "-9", str(pid)]).strip()
-        except RuntimeError as exc:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return {"ok": False, "output": f"no such process (pid {pid})"}
+        except PermissionError:
+            return {"ok": False, "output": f"permission denied (pid {pid})"}
+        except OSError as exc:
             return {"ok": False, "output": str(exc)}
-        return {"ok": True, "output": output}
+        return {"ok": True, "output": ""}
 
     def process_name(self, pid: int) -> "str | None":
         return process_name(pid)

@@ -305,6 +305,7 @@ If it is unavailable, either remediation works (spec §5.4):
 sudo usermod -aG input $USER        # then log out and back in
 # — or a udev rule:
 echo 'KERNEL=="uinput", MODE="0660", GROUP="input"' | sudo tee /etc/udev/rules.d/99-uinput.rules
+sudo udevadm control --reload && sudo udevadm trigger
 ```
 
 Everything except game mode works without this access.

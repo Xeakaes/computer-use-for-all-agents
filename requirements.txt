@@ -1,7 +1,7 @@
 # screen-control dependencies
 
 # Core (required)
-mss>=9.0                   # Fast cross-platform screen capture
+mss>=10.0                  # Fast cross-platform screen capture (mss.MSS API)
 pyautogui>=0.9.54          # Mouse/keyboard control (fallback for SendInput)
 pyvda>=0.4; sys_platform == "win32"   # Windows virtual desktop management (Win+Tab desktops)
 flask>=3.0                 # Lightweight HTTP server for the API

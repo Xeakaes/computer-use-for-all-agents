@@ -53,7 +53,8 @@ else
     echo "       Fix it with one of these (spec 5.4), then re-run this script:"
     echo "         sudo usermod -aG input \$USER   # then log out and back in"
     cat <<'UDEV'
-         echo 'KERNEL=="uinput", MODE=="0660", GROUP=="input"' | sudo tee /etc/udev/rules.d/99-uinput.rules
+         echo 'KERNEL=="uinput", MODE="0660", GROUP="input"' | sudo tee /etc/udev/rules.d/99-uinput.rules
+         sudo udevadm control --reload && sudo udevadm trigger
 UDEV
 fi
 

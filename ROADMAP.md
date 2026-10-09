@@ -29,7 +29,7 @@
 - [ ] Explicitly state that the repository does not contain an AI model or autonomous reasoning engine.
 - [ ] Define initial support targets:
   - [ ] Windows 10/11 — primary and most complete backend.
-  - [ ] Linux X11 — first Linux target.
+  - [x] Linux X11 — first Linux target.
   - [ ] macOS — screen capture and input with explicit permissions.
   - [ ] Linux Wayland — capability-based, limited support initially.
 - [ ] Add a platform support matrix to the documentation.
@@ -553,7 +553,7 @@ Consider a configurable policy file:
 
 - [ ] Rewrite README quick start for a five-minute first success.
 - [ ] Add Windows installation guide.
-- [ ] Add Linux X11 guide.
+- [x] Add Linux X11 guide.
 - [ ] Add Linux Wayland limitations guide.
 - [ ] Add macOS permissions guide.
 - [ ] Add architecture diagram.
@@ -590,7 +590,7 @@ The most useful next sprint would be:
 5. [ ] Add `/api/capabilities`.
 6. [ ] Add standardized errors.
 7. [ ] Add GitHub Actions for Ubuntu, macOS, and Windows unit/integration tests.
-8. [ ] Add Linux X11 installation documentation.
+8. [x] Add Linux X11 installation documentation.
 9. [ ] Add macOS permission documentation.
 10. [ ] Add explicit support/limitation tables.
 

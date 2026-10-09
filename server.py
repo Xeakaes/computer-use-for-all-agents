@@ -369,6 +369,11 @@ def _watchdog_loop():
 DENY_KILL_PROCS = {
     "winlogon.exe", "csrss.exe", "smss.exe", "services.exe", "lsass.exe",
     "svchost.exe", "system", "registry", "dwm.exe",
+    "init", "kthreadd", "systemd", "systemd-logind", "systemd-journald",
+    "dbus-daemon", "dbus-broker", "x", "xorg", "xwayland",
+    "cinnamon", "cinnamon-session", "muffin", "mutter", "gnome-shell",
+    "lightdm", "sddm", "gdm", "gdm3", "sshd",
+    "pulseaudio", "pipewire", "wireplumber",
 }
 
 

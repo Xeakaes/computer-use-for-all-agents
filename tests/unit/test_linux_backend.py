@@ -8,6 +8,7 @@ real X11 DISPLAY.
 """
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -744,18 +745,25 @@ class TestLinuxKillAndProcess(unittest.TestCase):
         backend = LinuxBackend()
         for pid in (1, 0, -5, os.getpid()):
             with self.subTest(pid=pid):
-                with mock.patch("backends.linux.run_x11") as run:
+                with mock.patch("backends.linux.os.kill") as kill:
                     result = backend.kill_process(pid)
                 self.assertIsInstance(result, dict)
                 self.assertFalse(result["ok"])
                 self.assertIn("output", result)
-                run.assert_not_called()
+                kill.assert_not_called()
 
-    def test_kill_process_sends_kill_minus_9(self):
-        with mock.patch("backends.linux.run_x11", return_value="") as run:
+    def test_kill_process_sends_sigkill(self):
+        with mock.patch("backends.linux.os.kill") as kill:
             result = LinuxBackend().kill_process(4321)
         self.assertEqual(result, {"ok": True, "output": ""})
-        run.assert_called_once_with(["kill", "-9", "4321"])
+        kill.assert_called_once_with(4321, signal.SIGKILL)
+
+    def test_kill_process_clean_error_on_missing_pid(self):
+        with mock.patch("backends.linux.os.kill",
+                        side_effect=ProcessLookupError(3, "No such process")):
+            result = LinuxBackend().kill_process(4321)
+        self.assertEqual(result, {"ok": False,
+                                  "output": "no such process (pid 4321)"})
 
     @unittest.skipUnless(os.path.exists("/proc/self/comm"),
                          "requires procfs (Linux)")
