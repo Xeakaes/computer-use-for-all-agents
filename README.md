@@ -659,6 +659,46 @@ curl -X POST http://127.0.0.1:8745/api/window -H "X-Auth-Token: $TOKEN" \
   -H "Content-Type: application/json" -d '{"action":"kill","hwnd":12345,"pid":7890}'
 ```
 
+#### `POST /api/launch`
+
+Spawn an application, open a URL, or open a local file. Exactly one of
+`app` | `url` | `file`. Never runs through a shell: `app` is a plain command
+name resolved on `PATH` (`[A-Za-z0-9._+-]+`), `url`/`file` go through
+`xdg-open`.
+
+| Field | Type | Description |
+|---|---|---|
+| `app` | string | Command name; must exist on `PATH` (else 400) |
+| `url` | string | `scheme://...` (e.g. `https://`, `steam://`) |
+| `file` | string | Absolute path to an existing file |
+| `args` | list | Arguments for `app` only |
+| `expect_title` | string | Also wait for a window whose title contains it |
+| `timeout` | number | Wait for `expect_title`: default 10, max 30 s |
+
+```json
+{"ok": true, "pid": 4321, "window": {"hwnd": ..., "title": "..."}}
+```
+
+With `expect_title`, `window` is the match or `null` (spawn succeeded, no
+window yet) — the HTTP status stays 200 either way.
+
+```bash
+curl -X POST http://127.0.0.1:8745/api/launch -H "X-Auth-Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"app":"firefox","expect_title":"Mozilla Firefox","timeout":15}'
+```
+
+#### `GET /api/window/wait`
+
+Block until a window whose title contains `title` (case-insensitive
+substring) appears, then return it. `timeout` default 10 s, max 30 s;
+`200` with the window, or `408 OPERATION_TIMEOUT`.
+
+```bash
+curl -H "X-Auth-Token: $TOKEN" \
+  "http://127.0.0.1:8745/api/window/wait?title=Notepad&timeout=10"
+```
+
 ---
 
 ### Focus-Free (Background) Control

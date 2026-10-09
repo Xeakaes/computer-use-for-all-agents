@@ -23,7 +23,10 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -913,6 +916,119 @@ def windows():
     except Exception:
         pass
     return jsonify({"ok": True, "windows": wins})
+
+
+_APP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+_URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://\S+$")
+
+
+def _wait_for_window(title: str, timeout: float) -> "dict | None":
+    """Poll the window list for a case-insensitive title substring match."""
+    deadline = time.monotonic() + timeout
+    needle = title.lower()
+    while True:
+        with _read_lock:
+            wins = _b().list_windows()
+        for w in wins:
+            if needle in (w.get("title") or "").lower():
+                return w
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.25)
+
+
+@app.get("/api/window/wait")
+def window_wait():
+    """Block until a window whose title contains `title` appears (408 on timeout)."""
+    title = (request.args.get("title") or "").strip()
+    if not title:
+        return jsonify({"ok": False,
+                        "error": "title query parameter is required"}), 400
+    try:
+        timeout = float(request.args.get("timeout", 10))
+    except ValueError:
+        return jsonify({"ok": False,
+                        "error": "timeout must be a number"}), 400
+    timeout = max(0.0, min(timeout, 30.0))
+    try:
+        win = _wait_for_window(title, timeout)
+    except ApiError as exc:
+        return _handle_error(exc)
+    if win is None:
+        return _handle_error(ApiError(
+            "OPERATION_TIMEOUT",
+            f"no window with {title!r} in its title within {timeout:g}s",
+            status=408))
+    return jsonify({"ok": True, "window": win})
+
+
+@app.post("/api/launch")
+def launch_app():
+    """Spawn an app, or open a URL/file — always without a shell."""
+    body = request.get_json(force=True, silent=True) or {}
+    app, url, path = body.get("app"), body.get("url"), body.get("file")
+    if sum(x is not None for x in (app, url, path)) != 1:
+        return jsonify({"ok": False,
+                        "error": "provide exactly one of: app, url, file"}), 400
+    args = body.get("args") or []
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        return jsonify({"ok": False,
+                        "error": "args must be a list of strings"}), 400
+    if args and app is None:
+        return jsonify({"ok": False,
+                        "error": "args only apply when launching an app"}), 400
+
+    if app is not None:
+        if not isinstance(app, str) or not _APP_NAME_RE.match(app):
+            return jsonify({"ok": False,
+                            "error": "app must be a plain command name "
+                                     "(letters, digits, . _ + -)"}), 400
+        resolved = shutil.which(app)
+        if resolved is None:
+            return jsonify({"ok": False,
+                            "error": f"app not found on PATH: {app}"}), 400
+        cmd = [resolved, *args]
+    elif url is not None:
+        if not isinstance(url, str) or not _URL_RE.match(url):
+            return jsonify({"ok": False,
+                            "error": "url must look like scheme://host/..."}), 400
+        cmd = ["open" if sys.platform == "darwin" else "xdg-open", url]
+    else:
+        if not isinstance(path, str) or not os.path.isabs(path):
+            return jsonify({"ok": False,
+                            "error": "file must be an absolute path"}), 400
+        if not os.path.isfile(path):
+            return jsonify({"ok": False,
+                            "error": f"file not found: {path}"}), 400
+        cmd = ["open" if sys.platform == "darwin" else "xdg-open", path]
+
+    expect_title = body.get("expect_title")
+    timeout = None
+    if expect_title:
+        try:
+            timeout = float(body.get("timeout", 10))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False,
+                            "error": "timeout must be a number"}), 400
+        timeout = max(0.0, min(timeout, 30.0))
+
+    target = app or url or path
+    log_event("launch", {"target": target})
+    try:
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+    except OSError as exc:
+        return jsonify({"ok": False,
+                        "error": f"failed to launch {target}: {exc}"}), 500
+    result = {"ok": True, "pid": proc.pid}
+    if expect_title:
+        try:
+            result["window"] = _wait_for_window(str(expect_title), timeout)
+        except ApiError as exc:
+            return _handle_error(exc)
+    return jsonify(result)
 
 
 @app.post("/api/window")

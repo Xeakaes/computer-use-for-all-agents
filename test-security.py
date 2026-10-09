@@ -14,9 +14,11 @@ Coverage:
  10. Resource limits (SC-05): oversized region/scale/text rejected with 4xx
  11. Scoped API keys (SC-06): authenticate, expire, revoke
  12. MCP scoped-key URL (optional): /mcp/<key> works, master token refused
+ 13. App launch input validation + window-wait timeout (OPERATION_TIMEOUT)
 """
 
 import json
+import shutil
 import sys
 import time
 import urllib.request
@@ -314,6 +316,30 @@ if mcp_up:
     post("/api/keys", {"action": "revoke", "name": "mcp-url-test"})
 else:
     print("- MCP HTTP server (8751) not running; skipping optional checks")
+
+
+# --- 13) App launch + window wait ---
+
+print("\n== App Launch & Window Wait ==")
+s, r = post("/api/launch", {})
+check("Empty launch -> 400", s == 400, str(s))
+s, r = post("/api/launch", {"app": "bad name; rm -rf /"})
+check("Shell metacharacters in app -> 400", s == 400, str(s))
+s, r = post("/api/launch", {"app": "definitely-not-an-app-918273"})
+check("Unknown app -> 400", s == 400, str(s))
+s, r = post("/api/launch", {"url": "not a url"})
+check("Malformed url -> 400", s == 400, str(s))
+s, r = post("/api/launch", {"file": "/nonexistent/file-918273.pdf"})
+check("Missing file -> 400", s == 400, str(s))
+launch_app = "python3" if shutil.which("python3") else "python"
+s, r = post("/api/launch", {"app": launch_app, "args": ["-c", "pass"]})
+check("Launch interpreter -> ok + pid", s == 200 and r.get("ok")
+      and isinstance(r.get("pid"), int) and r["pid"] > 0, str(s))
+t0 = time.time()
+s, r = get_raw("/api/window/wait?title=__no_such_window_918273__&timeout=1")
+dt = time.time() - t0
+check("Wait timeout -> 408", s == 408, str(s))
+check("Wait honors timeout", dt < 6, f"{dt:.1f}s")
 
 
 # --- Summary ---

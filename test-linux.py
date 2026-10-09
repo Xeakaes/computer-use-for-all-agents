@@ -1,5 +1,5 @@
 """
-Live Linux X11 acceptance suite (7 items).
+Live Linux X11 acceptance suite (8 items).
 
 Talks to a real server on the real desktop:
     .venv/bin/python server.py > /tmp/sc-server.log 2>&1 &
@@ -14,7 +14,9 @@ Coverage:
   5. windows list + focus - >=1 entry with all 6 fields, focus lands on our
      window, window/post click lands at client origin + (50,60)
   6. game mode - start/move/hold/release/stop mechanics on an xev target
-  7. CS2 offline input - printed as SKIP (no native Linux game)
+  7. app launch + window wait - /api/launch opens a uniquely titled xmessage
+     and expect_title returns its window; safe close removes it
+  8. CS2 offline input - printed as SKIP (no native Linux game)
 
 Only windows spawned by this script are ever focused, typed into or clicked.
 Exit code 0 only when no item FAILs.
@@ -589,9 +591,40 @@ try:
                                  f"game_mode={info.get('game_mode')}")
     check("game mode", ok, "; ".join(parts))
 
-    # --- 7) CS2 offline input ---
+    # --- 7) App launch + window wait ---
 
-    print("\n== 7) CS2 Offline Input ==")
+    print("\n== 7) App Launch + Window Wait ==")
+    ok, parts = True, []
+    status, body = post("/api/launch", {
+        "app": "xmessage",
+        "args": ["-title", "SC_LAUNCH_OK", "launch-ok"],
+        "expect_title": "SC_LAUNCH_OK",
+        "timeout": 10,
+    })
+    win = (body or {}).get("window") or {}
+    if status == 200 and body.get("ok") and win.get("hwnd") \
+            and "SC_LAUNCH_OK" in win.get("title", ""):
+        parts.append(f"launched pid={body.get('pid')} "
+                     f"hwnd={hex(win['hwnd'])}")
+    else:
+        ok = False
+        parts.append(f"HTTP {status}: {str(body)[:120]}")
+    if win.get("hwnd"):
+        st, cl = post("/api/window", {
+            "action": "close",
+            "hwnd": win["hwnd"],
+            "expect_title": "SC_LAUNCH_OK",
+        })
+        if st == 200 and cl.get("ok"):
+            parts.append("closed via safe close")
+        else:
+            ok = False
+            parts.append(f"close HTTP {st}: {str(cl)[:80]}")
+    check("app launch + window wait", ok, "; ".join(parts))
+
+    # --- 8) CS2 offline input ---
+
+    print("\n== 8) CS2 Offline Input ==")
     print("SKIP: CS2 not installed on Linux (Windows Steam library only)")
 
 finally:

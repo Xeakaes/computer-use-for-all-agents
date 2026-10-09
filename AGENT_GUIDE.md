@@ -250,6 +250,27 @@ TOKEN=$(cat .token)
 
 ## Core Workflow: App Automation
 
+### Launch an app (instead of finding an already-open one)
+
+```bash
+# Spawn an app and get its window back in one call
+curl -X POST http://127.0.0.1:8745/api/launch -H "X-Auth-Token: $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"app":"firefox","expect_title":"Mozilla Firefox","timeout":15}'
+# → {"ok": true, "pid": 4321, "window": {"hwnd": ..., ...}}
+# "window": null means the app spawned but no matching window appeared
+# within the timeout — the launch itself still succeeded.
+
+# Open a website or a local file (also via /api/launch)
+-d '{"url":"https://example.com"}'
+-d '{"file":"/home/user/report.pdf"}'
+```
+
+`app` must be a plain command name (`[A-Za-z0-9._+-]+`) that exists on
+`PATH`; `url` must look like `scheme://...`; `file` must be an absolute
+existing path. Exactly one of the three, never a shell command — arguments
+go in `"args": [...]` and are passed directly to the process.
+
 ### Step-by-step
 
 ```bash
@@ -282,6 +303,9 @@ curl -X POST http://127.0.0.1:8745/api/ocr -H "X-Auth-Token: $TOKEN" \
 
 | Task | API Call |
 |---|---|
+| Launch an app | `POST /api/launch {"app":"firefox"}` |
+| Open a website | `POST /api/launch {"url":"https://..."}` |
+| Wait for a window | `GET /api/window/wait?title=...&timeout=10` |
 | Type text | `POST /api/key {"action":"type","text":"..."}` |
 | Press Enter | `POST /api/key {"action":"press","key":"enter"}` |
 | Ctrl+S (save) | `POST /api/key {"action":"hotkey","keys":["ctrl","s"]}` |
@@ -542,6 +566,18 @@ curl -X POST http://127.0.0.1:8745/api/window -H "X-Auth-Token: $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"action":"kill","hwnd":12345,"pid":7890}'
 ```
+
+### Wait for a window to appear
+
+```bash
+curl -H "X-Auth-Token: $TOKEN" \
+  "http://127.0.0.1:8745/api/window/wait?title=Notepad&timeout=10"
+# → 200 {"ok": true, "window": {...}} when a title match appears
+# → 408 OPERATION_TIMEOUT after the wait (timeout default 10s, max 30s)
+```
+
+Case-insensitive substring match; use it after `/api/launch` (or any action
+that should create a window) instead of hand-rolled polling loops.
 
 ---
 
