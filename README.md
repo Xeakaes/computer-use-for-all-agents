@@ -887,6 +887,12 @@ curl -X POST http://127.0.0.1:8745/api/release_all -H "X-Auth-Token: $TOKEN" \
 A dedicated, comprehensive guide for AI agents (LLMs, vision models, automation
 frameworks) is available in **[AGENT_GUIDE.md](AGENT_GUIDE.md)**.
 
+A portable **[SKILL.md](skills/computer-use/SKILL.md)** pack lives in
+`skills/computer-use/` — drop it into `~/.claude/skills/` (or any agent's
+skills folder) to get setup, the perceive-act loop, safety rules and a full
+API reference loaded on demand; the same pack is what we list on skill
+marketplaces.
+
 It covers:
 - Environment routing — find Windows vs Linux (X11/Wayland) first
 - Perceive-act loop (read → plan → act → verify)
