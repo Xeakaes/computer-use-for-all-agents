@@ -599,18 +599,21 @@ def screenshot():
 _last_gray = {"img": None}
 
 
-def _validated_region():
+def _parse_region(r):
     """
-    Parse and bound-check the ?region=x,y,w,h query parameter (SC-05).
-    Returns (x, y, w, h), None when absent, or raises ValueError with a
-    client-safe message on malformed/out-of-bounds input.
+    Normalise a capture region given as 'x,y,w,h' (query string / MCP) or
+    [x, y, w, h] (JSON body) into a bounded (x, y, w, h) tuple.
+    None stays None; raises ValueError with a client-safe message.
     """
-    r = request.args.get("region")
-    if not r:
+    if r is None:
         return None
+    if isinstance(r, str):
+        parts = [p.strip() for p in r.split(",")]
+    else:
+        parts = list(r)
     try:
-        x, y, w, h = (int(v) for v in r.split(","))
-    except ValueError:
+        x, y, w, h = (int(v) for v in parts)
+    except (TypeError, ValueError):
         raise ValueError("region must be x,y,w,h integers")
     if not (0 < w <= MAX_REGION_DIM and 0 < h <= MAX_REGION_DIM):
         raise ValueError(f"region w/h must be within 1..{MAX_REGION_DIM}")
@@ -620,6 +623,15 @@ def _validated_region():
             -MAX_REGION_DIM <= y <= MAX_REGION_DIM):
         raise ValueError(f"region x/y must be within +-{MAX_REGION_DIM}")
     return (x, y, w, h)
+
+
+def _validated_region():
+    """
+    Parse and bound-check the ?region=x,y,w,h query parameter (SC-05).
+    Returns (x, y, w, h), None when absent, or raises ValueError with a
+    client-safe message on malformed/out-of-bounds input.
+    """
+    return _parse_region(request.args.get("region"))
 
 
 def _validated_scale() -> float:
@@ -857,9 +869,12 @@ def release_all_ep():
 def ocr():
     """OCR the screen (or a region) to extract text — the 'eyes' of the agent."""
     body = request.get_json(force=True, silent=True) or {}
-    region = body.get("region")
+    try:
+        region = _parse_region(body.get("region"))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     with _read_lock:
-        img = _b().screenshot(region=tuple(region) if region else None)
+        img = _b().screenshot(region=region)
     engine = get_ocr_engine()
     if engine is None:
         msg = ("OCR engine not installed. Install: python -m pip install rapidocr-onnxruntime"

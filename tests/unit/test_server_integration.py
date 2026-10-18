@@ -87,5 +87,45 @@ class TestServerRoutesWithFakeBackend(unittest.TestCase):
         self.assertEqual(r.status_code, 401)
 
 
+class TestOcrRegionFormats(unittest.TestCase):
+    """POST /api/ocr region: 'x,y,w,h' string (MCP clients) or [x,y,w,h]."""
+
+    def setUp(self):
+        self.client, self.backend = make_fake_server()
+
+    def _screenshots(self):
+        return [c for c in self.backend.calls if c[0] == "screenshot"]
+
+    def test_string_region_normalised_to_tuple(self):
+        r = self.client.post("/api/ocr", json={"region": "10,20,30,40"})
+        self.assertNotIn(r.status_code, (400, 500), r.get_json())
+        self.assertIn(("screenshot", (1, (10, 20, 30, 40)), {}),
+                      self._screenshots())
+
+    def test_list_region_normalised_to_tuple(self):
+        r = self.client.post("/api/ocr", json={"region": [10, 20, 30, 40]})
+        self.assertNotIn(r.status_code, (400, 500), r.get_json())
+        self.assertIn(("screenshot", (1, (10, 20, 30, 40)), {}),
+                      self._screenshots())
+
+    def test_malformed_region_400_before_any_capture(self):
+        for bad in ("a,b,c,d", [1, 2], {"x": 1}, "1,2,3"):
+            with self.subTest(region=bad):
+                r = self.client.post("/api/ocr", json={"region": bad})
+                self.assertEqual(r.status_code, 400)
+                self.assertFalse(r.get_json()["ok"])
+        self.assertEqual(self._screenshots(), [])
+
+    def test_out_of_bounds_region_400(self):
+        r = self.client.post("/api/ocr", json={"region": "9999999,0,10,10"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_get_screenshot_query_region_still_works(self):
+        r = self.client.get("/api/screenshot?region=10,20,30,40")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(("screenshot_jpeg", (1, (10, 20, 30, 40), 80), {}),
+                      self.backend.calls)
+
+
 if __name__ == "__main__":
     unittest.main()
