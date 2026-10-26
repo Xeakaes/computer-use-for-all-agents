@@ -10,6 +10,8 @@
   <a href="https://github.com/features/actions"><img alt="CI: security tests" src="https://img.shields.io/badge/CI-security%20tests-brightgreen"></a>
   <a href="#mcp-support-one-click-cloud-agents"><img alt="MCP" src="https://img.shields.io/badge/MCP-compatible-9370DB"></a>
   <a href="https://mcpservers.org/servers/xeakaes/computer-use-for-all-agents"><img alt="Listed on mcpservers.org" src="https://mcpservers.org/badge.svg"></a>
+  <a href="https://glama.ai/mcp/servers/Xeakaes/computer-use-for-all-agents"><img alt="Glama quality score" src="https://glama.ai/mcp/servers/Xeakaes/computer-use-for-all-agents/badges/score.svg"></a>
+  <a href="https://www.agensi.io/skills/computer-use"><img alt="Agensi skill marketplace" src="https://img.shields.io/badge/Agensi-computer--use-6C5CE7"></a>
 </p>
 
 > A local remote-control system for AI agents: watch your computer's screen
@@ -222,6 +224,35 @@ the foreground window doesn't match the target.
 ---
 
 ## Installation
+
+Pick the version that fits how your agent works:
+
+| You are... | Version | Install |
+|---|---|---|
+| An AI agent user (Claude Code, Cursor, skills-capable agents) | **Skill** | [Skill version](#skill-version) — copy `skills/computer-use/` into the agent's skills folder |
+| An MCP-capable app (Claude Desktop, VS Code, cloud agents) | **MCP** | [MCP Support](#mcp-support-one-click-cloud-agents) — `mcp_server.py` over stdio or streamable-HTTP |
+| A developer / API client | **REST** | this page — `pip install -r requirements.txt` + `python server.py` |
+
+### Skill version
+
+The portable agent skill lives in [`skills/computer-use/`](skills/computer-use/)
+(`SKILL.md` plus a full API reference). It teaches any skills-capable agent
+the perceive-act-verify loop, the safety rules and the endpoint catalogue —
+the agent then drives a running server.
+
+```bash
+# Claude Code — user-level (available in every project)
+cp -r skills/computer-use ~/.claude/skills/
+
+# Claude Code — this project only
+mkdir -p .claude/skills && cp -r skills/computer-use .claude/skills/
+```
+
+For other skill-capable agents, copy the folder into that agent's own skills
+directory. Either way the **server must be running** (`python server.py`) —
+the skill provides instructions, not a backend.
+
+### REST server
 
 ```bash
 cd screen-control
@@ -887,11 +918,8 @@ curl -X POST http://127.0.0.1:8745/api/release_all -H "X-Auth-Token: $TOKEN" \
 A dedicated, comprehensive guide for AI agents (LLMs, vision models, automation
 frameworks) is available in **[AGENT_GUIDE.md](AGENT_GUIDE.md)**.
 
-A portable **[SKILL.md](skills/computer-use/SKILL.md)** pack lives in
-`skills/computer-use/` — drop it into `~/.claude/skills/` (or any agent's
-skills folder) to get setup, the perceive-act loop, safety rules and a full
-API reference loaded on demand; the same pack is what we list on skill
-marketplaces.
+Prefer loading this as a skill instead of browsing docs? Install the
+[Skill version](#skill-version).
 
 It covers:
 - Environment routing — find Windows vs Linux (X11/Wayland) first
