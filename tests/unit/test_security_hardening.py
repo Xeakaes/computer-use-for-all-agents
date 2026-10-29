@@ -116,7 +116,9 @@ class TestTokenFileHygiene(unittest.TestCase):
     def test_write_session_token_is_0600_and_atomic(self):
         server._write_session_token()
         self.assertTrue(os.path.exists(self.token_path))
-        self.assertEqual(self._mode(self.token_path), 0o600)
+        if sys.platform != "win32":
+            # POSIX mode bits are not meaningful on Windows (always ~0666).
+            self.assertEqual(self._mode(self.token_path), 0o600)
         with open(self.token_path, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), server.SESSION_TOKEN)
         self.assertFalse(os.path.exists(self.token_path + ".tmp"))
@@ -125,7 +127,8 @@ class TestTokenFileHygiene(unittest.TestCase):
         server._api_key_names["a" * 64] = "unit-key"
         self.addCleanup(server._api_key_names.pop, "a" * 64, None)
         server._save_api_keys()
-        self.assertEqual(self._mode(self.apikeys_path), 0o600)
+        if sys.platform != "win32":
+            self.assertEqual(self._mode(self.apikeys_path), 0o600)
         self.assertFalse(os.path.exists(self.apikeys_path + ".tmp"))
 
     def test_module_no_longer_writes_token_at_import_time(self):
