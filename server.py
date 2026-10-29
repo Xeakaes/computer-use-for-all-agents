@@ -98,6 +98,9 @@ except Exception:  # pragma: no cover - Pillow is a hard dependency anyway
 # A DNS-rebinding page resolves its domain to 127.0.0.1 and its requests
 # arrive with a foreign Host header — those are refused with 421.
 _TRUSTED_HOSTS = {"127.0.0.1", "localhost", "::1"}
+# Real peer addresses that count as "this machine" (VULN-002: security
+# decisions use the accepted socket's peer, never a client-supplied header).
+_LOOPBACK_PEERS = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
 
 def _normalize_host(value: str) -> str:
@@ -198,12 +201,21 @@ APIKEYS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".apikey
 _persistent_keys: set[str] = set()
 _api_key_names: dict[str, str] = {}  # key_hash -> name
 _api_key_expiry: dict[str, float] = {}  # key_hash -> unix epoch (None = never)
+_api_key_scopes: dict[str, set] = {}  # key_hash -> {"rest","mcp"} subset
+
+_VALID_KEY_SCOPES = {"rest", "mcp"}
+_FULL_KEY_SCOPES = {"rest", "mcp"}
+# Admin endpoints: master session token only — a scoped key exists to SHRINK
+# the blast radius, so it can never mint/revoke keys or read the session log.
+_ADMIN_PATHS = ("/api/keys", "/api/session", "/api/session/clear")
 
 def _load_api_keys():
     """Load API keys from .apikeys file (format: hash\\tname per line).
     
     NOTE: The file stores pre-computed SHA256 hashes, NOT raw keys.
     We do NOT hash again here — that would be double-hashing.
+    Optional columns: expiry (ISO or epoch), scopes (comma-separated).
+    A key without a scopes column keeps full rest+mcp access (legacy).
     """
     global _persistent_keys, _api_key_names
     if not os.path.exists(APIKEYS_FILE):
@@ -227,33 +239,71 @@ def _load_api_keys():
                                   else float(raw_exp))
                     except (ValueError, OSError):
                         expiry = None  # unreadable expiry -> treat as never
+                # Optional fourth column: scopes (comma-separated subset).
+                scopes = set(_FULL_KEY_SCOPES)
+                if len(parts) > 3 and parts[3].strip():
+                    parsed = {s.strip().lower()
+                              for s in parts[3].split(",") if s.strip()}
+                    scopes = parsed & _VALID_KEY_SCOPES or set(_FULL_KEY_SCOPES)
                 # Validate it looks like a hex hash (64 chars for SHA256)
                 if len(key_hash) == 64 and all(c in '0123456789abcdef' for c in key_hash):
                     _persistent_keys.add(key_hash)
                     _api_key_names[key_hash] = name
                     if expiry is not None:
                         _api_key_expiry[key_hash] = expiry
+                    _api_key_scopes[key_hash] = scopes
     except Exception:
         pass
 
 def _save_api_keys():
-    """Save API keys to .apikeys file."""
-    with open(APIKEYS_FILE, "w", encoding="utf-8") as f:
+    """Save API keys to .apikeys file (atomic, 0600 — hashes only, but keep private)."""
+    tmp = APIKEYS_FILE + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write("# Screen Control API Keys\n")
         f.write("# Format: key\\tname (one per line)\n")
         f.write(f"# Generated: {datetime.now().isoformat()}\n\n")
         for key_hash, name in _api_key_names.items():
             exp = _api_key_expiry.get(key_hash)
-            f.write(f"{key_hash}\t{name}"
-                    + (f"\t{datetime.fromtimestamp(exp).isoformat()}" if exp else "")
-                    + "\n")
+            exp_col = (datetime.fromtimestamp(exp).isoformat() if exp else "")
+            scopes = _api_key_scopes.get(key_hash, set(_FULL_KEY_SCOPES))
+            scope_col = (",".join(sorted(scopes))
+                         if scopes != _FULL_KEY_SCOPES else "")
+            if exp_col or scope_col:
+                f.write(f"{key_hash}\t{name}\t{exp_col}\t{scope_col}\n")
+            else:
+                f.write(f"{key_hash}\t{name}\n")
+    os.replace(tmp, APIKEYS_FILE)
 
-# Write session token
-with open(SESSION_TOKEN_FILE, "w", encoding="utf-8") as _fh:
-    _fh.write(SESSION_TOKEN)
+def _write_session_token() -> None:
+    """Publish the session token AFTER the server has bound its port.
+
+    Never at import time: a racing second spawn imports this module before
+    knowing it cannot bind; an import-time write would clobber the LIVE
+    server's token and 401 every subsequent tool call (VULN-003). Atomic
+    replace with 0600 perms.
+    """
+    tmp = SESSION_TOKEN_FILE + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(SESSION_TOKEN)
+    os.replace(tmp, SESSION_TOKEN_FILE)
+    try:
+        os.chmod(SESSION_TOKEN_FILE, 0o600)
+    except OSError:
+        pass
 
 # Load persistent keys
 _load_api_keys()
+
+
+def _key_scopes(token: str) -> set:
+    """Scopes for a presented token; the master token is always full access."""
+    if secrets.compare_digest(token.encode("utf-8", "ignore"),
+                              SESSION_TOKEN.encode()):
+        return set(_FULL_KEY_SCOPES)
+    key_hash = hashlib.sha256(token.encode()).hexdigest()
+    return _api_key_scopes.get(key_hash, set(_FULL_KEY_SCOPES))
 
 
 def _is_valid_token(token: str) -> bool:
@@ -288,6 +338,19 @@ def _require_auth():
     supplied = request.headers.get("X-Auth-Token", "")
     if not supplied or not _is_valid_token(supplied):
         return jsonify({"ok": False, "error": "unauthorized: X-Auth-Token required"}), 401
+    # VULN-023: scoped keys are blast-radius credentials — admin endpoints
+    # (key management, session log) accept the master token only, and every
+    # other REST route needs the "rest" scope (legacy keys default to full).
+    if not secrets.compare_digest(supplied.encode("utf-8", "ignore"),
+                                  SESSION_TOKEN.encode()):
+        if request.path in _ADMIN_PATHS or request.path.startswith("/api/session"):
+            return jsonify({"ok": False,
+                            "error": "admin endpoint: master session token "
+                                     "required (scoped keys are not allowed)"}), 403
+        scopes = _key_scopes(supplied)
+        if request.path.startswith("/api/") and "rest" not in scopes:
+            return jsonify({"ok": False,
+                            "error": "key lacks the 'rest' scope"}), 403
     if request.method == "POST" and not request.is_json:
         return jsonify({"ok": False, "error": "Content-Type: application/json required"}), 415
     return None
@@ -404,6 +467,21 @@ def _index_path() -> Path:
     return Path(__file__).parent / "index.html"
 
 
+# VULN-001: the web UI keeps its inline <script> blocks (same-origin, no
+# external code), but inline EVENT HANDLERS — the onerror= token-exfil
+# vector — are switched off via script-src-attr. Shipped both as a header
+# (enforced) and as a meta tag in index.html (defense in depth).
+_CSP_HEADER = ("default-src 'self'; "
+               "script-src 'self' 'unsafe-inline'; "
+               "script-src-attr 'none'; "
+               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+               "font-src https://fonts.gstatic.com; "
+               "img-src 'self' blob: data:; "
+               "connect-src 'self'; "
+               "object-src 'none'; "
+               "base-uri 'none'")
+
+
 @app.get("/")
 def index():
     try:
@@ -414,6 +492,9 @@ def index():
             "<h1>screen-control</h1><p>Web UI file (index.html) not found. "
             "The REST API is unaffected.</p>", mimetype="text/html")
     resp.headers["Cache-Control"] = "no-store"
+    # VULN-001: even if untrusted window data ever reaches a sink again,
+    # inline event handlers (the token-exfil vector) are dead on this page.
+    resp.headers["Content-Security-Policy"] = _CSP_HEADER
     return resp
 
 
@@ -421,15 +502,17 @@ def index():
 def token_bootstrap():
     """
     Token bootstrap for the bundled web UI.
-    
-    Security: Only works when binding to localhost (127.0.0.1).
-    When binding to 0.0.0.0, /token is disabled to prevent network access.
-    Use persistent API keys (--api-key) for remote access instead.
+
+    Security (VULN-002): enabled only for a loopback PEER on a loopback
+    bind. The peer address comes from the accepted socket — a LAN attacker
+    cannot spoof it the way they spoof the Host header. When binding to
+    0.0.0.0 (or when reached from a non-loopback peer), /token is disabled;
+    use persistent API keys (--api-key) for remote access instead.
     """
-    if _bind_host != "127.0.0.1":
+    if _bind_host != "127.0.0.1" or request.remote_addr not in _LOOPBACK_PEERS:
         return jsonify({
             "ok": False, 
-            "error": "Token endpoint disabled for non-localhost binding. Use persistent API keys instead."
+            "error": "Token endpoint disabled for non-localhost access. Use persistent API keys instead."
         }), 403
     resp = jsonify({"ok": True, "token": SESSION_TOKEN, "type": "session"})
     # Never cache a credential in any layer (browser, proxy) (SC-01).
@@ -482,10 +565,24 @@ def api_keys_manage():
     if action == "create":
         name = body.get("name", f"key-{len(_persistent_keys)+1}")
         hours = body.get("expires_in_hours")
+        raw_scopes = body.get("scopes")
+        scopes = set(_FULL_KEY_SCOPES)
+        if raw_scopes is not None:
+            if (not isinstance(raw_scopes, list) or not raw_scopes
+                    or not all(isinstance(s, str) for s in raw_scopes)):
+                return jsonify({"ok": False,
+                                "error": "scopes must be a non-empty list "
+                                         "of strings"}), 400
+            scopes = {s.strip().lower() for s in raw_scopes}
+            if not scopes <= _VALID_KEY_SCOPES:
+                return jsonify({"ok": False,
+                                "error": "scopes must be a subset of "
+                                         f"{sorted(_VALID_KEY_SCOPES)}"}), 400
         new_key = secrets.token_hex(24)
         key_hash = hashlib.sha256(new_key.encode()).hexdigest()
         _persistent_keys.add(key_hash)
         _api_key_names[key_hash] = name
+        _api_key_scopes[key_hash] = set(scopes)
         expiry_iso = None
         if hours is not None:
             try:
@@ -495,6 +592,7 @@ def api_keys_manage():
             except ValueError:
                 _persistent_keys.discard(key_hash)
                 del _api_key_names[key_hash]
+                _api_key_scopes.pop(key_hash, None)
                 return jsonify({"ok": False,
                                 "error": "expires_in_hours must be a positive number"}), 400
             expiry = time.time() + hours * 3600
@@ -506,6 +604,7 @@ def api_keys_manage():
             msg += f" - expires {expiry_iso}"
         return jsonify({"ok": True, "key": new_key, "name": name,
                         "expires_at": expiry_iso,
+                        "scopes": sorted(scopes),
                         "message": msg})
     
     elif action == "list":
@@ -513,6 +612,7 @@ def api_keys_manage():
         keys = [{"name": name, "hash": h[:8],
                  "expires_at": (datetime.fromtimestamp(e).isoformat()
                                 if (e := _api_key_expiry.get(h)) else None),
+                 "scopes": sorted(_api_key_scopes.get(h, set(_FULL_KEY_SCOPES))),
                  "expired": bool(_api_key_expiry.get(h)) and _api_key_expiry[h] <= now}
                 for h, name in _api_key_names.items()]
         return jsonify({"ok": True, "keys": keys, "count": len(keys)})
@@ -528,6 +628,7 @@ def api_keys_manage():
             _persistent_keys.discard(h)
             del _api_key_names[h]
             _api_key_expiry.pop(h, None)
+            _api_key_scopes.pop(h, None)
         _save_api_keys()
         return jsonify({"ok": True, "revoked": name})
     
@@ -936,6 +1037,34 @@ def windows():
 _APP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 _URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://\S+$")
 
+# VULN-007: /api/launch args turned {"app":"python3","args":["-c","..."]}
+# into arbitrary RCE. The app-name regex was only a format check. Launch is
+# for GUI applications — interpreters and process executors (which run
+# whatever you hand them) are refused outright.
+_BLOCKED_LAUNCH_APPS = frozenset({
+    # interpreters / script engines
+    "python", "node", "deno", "ruby", "perl", "php", "lua", "tcl",
+    "julia", "r", "rscript", "pwsh", "powershell", "cmd", "wscript",
+    "cscript", "mshta",
+    # shells
+    "sh", "bash", "zsh", "fish", "csh", "tcsh", "ksh", "dash",
+    # executors / indirect runners
+    "env", "xargs", "find", "busybox", "timeout", "nohup", "stdbuf",
+    "nice", "taskset", "chroot", "sudo", "doas", "ssh", "at",
+    "rundll32", "regsvr32", "certutil", "bitsadmin", "curl", "wget",
+})
+_BLOCKED_LAUNCH_RE = re.compile(
+    r"^python\d+(\.\d+)?$|^pypy\d*$|^node\d*$|^ruby\d+$", re.IGNORECASE)
+
+
+def _launch_app_blocked(app: str) -> bool:
+    """True when the app name is an interpreter/executor (format-insensitive)."""
+    base = os.path.basename(str(app)).strip().lower()
+    stem = base.split(".")[0] if base else ""
+    return (base in _BLOCKED_LAUNCH_APPS
+            or stem in _BLOCKED_LAUNCH_APPS
+            or bool(_BLOCKED_LAUNCH_RE.match(stem)))
+
 
 def _wait_for_window(title: str, timeout: float) -> "dict | None":
     """Poll the window list for a case-insensitive title substring match."""
@@ -998,6 +1127,11 @@ def launch_app():
             return jsonify({"ok": False,
                             "error": "app must be a plain command name "
                                      "(letters, digits, . _ + -)"}), 400
+        if _launch_app_blocked(app):
+            return jsonify({"ok": False,
+                            "error": f"app is not permitted by the launch "
+                                     f"policy (interpreter/executor): {app}. "
+                                     f"Open a GUI application instead."}), 400
         resolved = shutil.which(app)
         if resolved is None:
             return jsonify({"ok": False,
@@ -1456,7 +1590,22 @@ def main():
     print(f"Watchdog: held input auto-released after {HOLD_TIMEOUT_GAME:.0f}s (game) / {HOLD_TIMEOUT_NORMAL:.0f}s (normal)")
     print("Stop: Ctrl+C  |  Emergency: move cursor to top-left corner "
           "(not in game mode: use physical Esc/Alt+Tab)")
-    app.run(host=args.host, port=args.port, threaded=True)
+    # Bind first (raises on failure), THEN publish the token: a spawn that
+    # loses the bind race must leave the live server's token untouched
+    # (VULN-003). The file is written with 0600 perms via atomic replace.
+    from werkzeug.serving import make_server
+
+    server = make_server(args.host, args.port, app, threaded=True)
+    _write_session_token()
+    try:
+        server.serve_forever()
+    finally:
+        # B12: never exit with keys/buttons still down at the OS level —
+        # the watchdog dies with the process, so this is the last chance.
+        try:
+            _b().release_all()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

@@ -138,15 +138,17 @@ token handling, no manual JSON. All safety rules still apply (they live in
 - **Desktop clients** (Claude Desktop, Cursor, VS Code): run `mcp_server.py`
   as an stdio MCP server (config in README → *MCP Support*).
 - **Cloud clients**: the operator runs `start-server.bat` — it starts the
-  REST server, the MCP HTTP server, and a cloudflared tunnel, then prints the
-  public MCP URL and the token in the terminal. Manual equivalent:
-  `python mcp_server.py --http --port 8751` +
+  REST server and the MCP HTTP server, and (only with the `--tunnel` flag)
+  a cloudflared tunnel, then prints the public MCP URL and a **24-hour
+  scoped key** in the terminal (the master token is never printed).
+  Manual equivalent: `python mcp_server.py --http --port 8751` +
   `cloudflared tunnel --url http://127.0.0.1:8751`. The HTTP endpoint requires
   the `X-Auth-Token` header on every request. If your client cannot send
   custom headers, ask the operator for a **scoped key URL**
   (`<tunnel>/mcp/<scoped-key>`) — the master token is refused in URLs, and
-  scoped keys are time-limited and revocable. Query-string tokens
-  (`?token=...`) are rejected by design. The operator's token is in `.token`.
+  scoped keys are time-limited, scope-limited (`mcp`/`rest`) and revocable.
+  Query-string tokens (`?token=...`) are rejected by design. The operator's
+  master token is in `.token` (local machine only).
 
 ### Tool mapping (HTTP → MCP)
 
@@ -270,6 +272,11 @@ curl -X POST http://127.0.0.1:8745/api/launch -H "X-Auth-Token: $TOKEN" \
 `PATH`; `url` must look like `scheme://...`; `file` must be an absolute
 existing path. Exactly one of the three, never a shell command — arguments
 go in `"args": [...]` and are passed directly to the process.
+
+> Interpreter and executor names (`python*`, `node`, `sh`/`bash`,
+> `cmd`/`powershell`, `env`, `xargs`, `sudo`, `curl`, …) are **refused
+> (400)** — the endpoint launches GUI applications, it is not a code
+> execution API. If a workflow needs a script, launch the GUI that runs it.
 
 ### Step-by-step
 

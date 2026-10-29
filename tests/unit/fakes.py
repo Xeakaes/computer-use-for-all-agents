@@ -29,6 +29,11 @@ class _AuthClient:
         return self.open(path, method="POST", **kw)
 
 
+# Captured before install_fake_backend() replaces it, so tests that need the
+# REAL token validation (scoped keys, admin-only endpoints) can restore it.
+_REAL_IS_VALID_TOKEN = server._is_valid_token
+
+
 def install_fake_backend():
     """Swap server + core.backends to a fresh FakeBackend. Returns it."""
     backend = FakeBackend()

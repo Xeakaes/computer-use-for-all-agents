@@ -63,7 +63,7 @@ Error codes: `PERMISSION_REQUIRED`, `UNSUPPORTED_PLATFORM`,
 
 | Endpoint | Body | Notes |
 |---|---|---|
-| `POST /api/launch` | exactly one of `app` / `url` / `file`; `args` (app only); `expect_title`; `timeout` (≤30) | Never a shell. Returns `pid` (+ `window` if `expect_title`; may be `null` on 200) |
+| `POST /api/launch` | exactly one of `app` / `url` / `file`; `args` (app only); `expect_title`; `timeout` (≤30) | Never a shell. Interpreter/executor app names (`python*`, `sh`, `cmd`, `env`, …) are refused 400. Returns `pid` (+ `window` if `expect_title`; may be `null` on 200) |
 | `GET /api/desktops` | — | Virtual desktops (Windows; 503 elsewhere) |
 | `POST /api/desktop` | `action`: `switch` (`n`) / `create`; `hwnd` to move | Never switches silently |
 

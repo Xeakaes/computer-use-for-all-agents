@@ -18,11 +18,37 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+
+rem VULN-005: cloudflared is downloaded from a PINNED release and its
+rem SHA-256 is verified against Cloudflare's published checksum file.
+rem The mutable moving-tag download URL is never used.
+if not defined CLOUDFLARED_VER set CLOUDFLARED_VER=2026.9.3
+set "TUNNEL=0"
+set "TUNNEL_OPTIN=0"
+if /i "%~1"=="--tunnel" set "TUNNEL_OPTIN=1"
 if not exist "cloudflared.exe" (
-    echo [INFO] cloudflared.exe not found - downloading...
-    curl -L -o cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+    echo [INFO] cloudflared.exe not found - downloading pinned %CLOUDFLARED_VER%...
+    curl -fsSL -o cloudflared.exe "https://github.com/cloudflare/cloudflared/releases/download/%CLOUDFLARED_VER%/cloudflared-windows-amd64.exe"
 )
-set "TUNNEL=1"
+if exist "cloudflared.exe" (
+    curl -fsSL -o cloudflared.exe.sha256 "https://github.com/cloudflare/cloudflared/releases/download/%CLOUDFLARED_VER%/cloudflared-windows-amd64.exe.sha256"
+    set "ACTUAL="
+    set "EXPECTED="
+    for /f "skip=1 tokens=1" %%H in ('certutil -hashfile cloudflared.exe SHA256 2^>nul') do (
+        if not defined ACTUAL set "ACTUAL=%%H"
+    )
+    for /f "tokens=1" %%H in (cloudflared.exe.sha256) do (
+        if not defined EXPECTED set "EXPECTED=%%H"
+    )
+    if /i "%ACTUAL%"=="%EXPECTED%" (
+        echo        cloudflared %CLOUDFLARED_VER% verified via SHA-256.
+        set "TUNNEL=1"
+    ) else (
+        echo [ERROR] cloudflared SHA-256 mismatch - removing binary.
+        del /q cloudflared.exe cloudflared.exe.sha256 2>nul
+        set "TUNNEL=0"
+    )
+)
 if not exist "cloudflared.exe" (
     echo [WARN] cloudflared unavailable - cloud-agent tunnel will be skipped.
     set "TUNNEL=0"
@@ -82,15 +108,20 @@ if errorlevel 1 (
 echo        both servers are up.
 
 rem ---------------------------------------------------------------------
-rem [5/5] Start cloudflared tunnel (background) and capture its URL
+rem [5/5] Start cloudflared tunnel (OPT-IN via --tunnel) + capture URL
 rem ---------------------------------------------------------------------
 set "PUBLIC_URL="
-if "%TUNNEL%"=="1" (
+if "%TUNNEL%"=="1" if not "%TUNNEL_OPTIN%"=="1" (
+    echo [5/5] Tunnel NOT started - exposing the MCP server to the internet
+    echo        requires an explicit opt-in:  start-server.bat --tunnel
+)
+if "%TUNNEL%"=="1" if "%TUNNEL_OPTIN%"=="1" (
     echo [5/5] Starting cloudflared tunnel...
     start "screen-control tunnel" /min cmd /c cloudflared.exe tunnel --url http://127.0.0.1:8751 ^> tunnel.log 2^>^&1
 )
 set /a TRIES=0
 :wait_url
+if not "%TUNNEL_OPTIN%"=="1" goto after_url
 if not "%TUNNEL%"=="1" goto after_url
 set /a TRIES+=1
 if %TRIES% GTR 30 (
@@ -108,10 +139,12 @@ echo        tunnel ready.
 if not defined PUBLIC_URL echo        tunnel NOT running - cloud agents cannot connect until it is.
 
 rem ---------------------------------------------------------------------
-rem Summary: everything a cloud agent needs, ready to paste
+rem Summary: paste a SHORT-LIVED SCOPED KEY into the cloud agent.
+rem VULN-005: the master session token is never printed here — a scoped
+rem key (24 h, revocable via POST /api/keys) is the remote credential.
 rem ---------------------------------------------------------------------
-set "TOKEN="
-set /p TOKEN=<.token 2>nul
+set "SCOPED_KEY="
+for /f "usebackq delims=" %%K in (`python -c "import json,urllib.request,pathlib;t=pathlib.Path('.token').read_text().strip();req=urllib.request.Request('http://127.0.0.1:8745/api/keys',data=json.dumps({'action':'create','name':'launcher','expires_in_hours':24,'scopes':['mcp']}).encode(),headers={'X-Auth-Token':t,'Content-Type':'application/json'});print(json.load(urllib.request.urlopen(req,timeout=5)).get('key',''))"`) do set "SCOPED_KEY=%%K"
 
 echo.
 echo  ============================================================
@@ -128,27 +161,33 @@ echo   ------------------------------------------------------------
 if defined PUBLIC_URL (
     echo   Endpoint : !PUBLIC_URL!/mcp
 ) else (
-    echo   Endpoint : ^(tunnel not running - restart this script^)
+    echo   Endpoint : ^(tunnel not running - restart with --tunnel^)
 )
-echo   Header   : X-Auth-Token: !TOKEN!
+if defined SCOPED_KEY (
+    echo   Header   : X-Auth-Token: !SCOPED_KEY!
+    echo   ^(24-hour scoped key "launcher" - the master token is NOT shown^)
+) else (
+    echo   Header   : X-Auth-Token: ^(could not mint a scoped key - create one^)
+    echo              curl -X POST http://127.0.0.1:8745/api/keys -H "X-Auth-Token: <from .token>" -H "Content-Type: application/json" -d "{\"action\"^:"create\"^,\"name\"^:"launcher\"^,\"expires_in_hours\"^:24}"
+)
 echo   Auth     : X-Auth-Token header required  ^(401 otherwise^)
 echo   Headerless clients: create a scoped key ^(see below^), then use
 echo              !PUBLIC_URL!/mcp/SCOPED-KEY  as the endpoint URL.
 echo.
-echo   Create a scoped key ^(recommended for headerless connectors^):
-echo     curl -X POST http://127.0.0.1:8745/api/keys -H "X-Auth-Token: !TOKEN!" -H "Content-Type: application/json" -d "{\"action\"^:"create\"^,\"name\"^:"spark\"^,\"expires_in_hours\"^:24}"
+echo   Create another scoped key ^(key management is master-token only;
+echo     read the master from .token on THIS machine, never over the tunnel^):
+echo     curl -X POST http://127.0.0.1:8745/api/keys -H "Content-Type: application/json" -d "{\"action\"^:"create\"^,\"name\"^:"spark\"^,\"expires_in_hours\"^:24^,\"scopes\"^:[\"mcp\"]}" -H "X-Auth-Token: <master from .token>"
 echo   ------------------------------------------------------------
 echo.
 echo   Quick test from anywhere:
 if defined PUBLIC_URL (
     echo     curl "!PUBLIC_URL!/health"
-    echo     curl -H "X-Auth-Token: !TOKEN!" "!PUBLIC_URL!/mcp"
 ) else (
     echo     curl http://127.0.0.1:8751/health
 )
 echo.
-echo   Revoke the scoped key when done:
-echo     curl -X POST http://127.0.0.1:8745/api/keys -H "X-Auth-Token: !TOKEN!" -H "Content-Type: application/json" -d "{\"action\"^:"revoke\"^,\"name\"^:"spark\"}"
+echo   Revoke a scoped key when done:
+echo     curl -X POST http://127.0.0.1:8745/api/keys -H "Content-Type: application/json" -d "{\"action\"^:"revoke\"^,\"name\"^:"launcher\"}" -H "X-Auth-Token: <master token from .token, local only>"
 echo.
 echo   Stop everything: run stop-server.bat
 echo   ^(or close the three minimized windows: REST / MCP / tunnel^)

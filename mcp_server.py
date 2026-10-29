@@ -79,7 +79,8 @@ def _token() -> str:
 
 def _scoped_key_hashes() -> dict:
     """
-    Load persistent API key hashes from .apikeys (hash -> expiry epoch|None).
+    Load persistent API key hashes from .apikeys
+    (hash -> {"exp": expiry epoch|None, "scopes": set}).
     Used to validate scoped keys embedded in the URL path (/mcp/<key>) for
     headerless clients (SC-06). Cached by file mtime so revocations and
     creations by the REST server take effect immediately.
@@ -107,8 +108,17 @@ def _scoped_key_hashes() -> dict:
                                if (":" in raw or "-" in raw) else float(raw))
                     except (ValueError, OSError):
                         exp = None
+                # Optional fourth column: scopes (comma-separated). A key
+                # without it keeps full rest+mcp access (legacy semantics —
+                # VULN-015 unified the "no expiry" and "unknown" cases too:
+                # membership in this dict is what "known" means).
+                scopes = set(_FULL_KEY_SCOPES)
+                if len(parts) > 3 and parts[3].strip():
+                    parsed = {s.strip().lower()
+                              for s in parts[3].split(",") if s.strip()}
+                    scopes = parsed & _VALID_KEY_SCOPES or set(_FULL_KEY_SCOPES)
                 if len(h) == 64 and all(c in "0123456789abcdef" for c in h):
-                    keys[h] = exp
+                    keys[h] = {"exp": exp, "scopes": scopes}
         except OSError:
             keys = {}
         cache["mtime"] = mtime
@@ -116,6 +126,53 @@ def _scoped_key_hashes() -> dict:
     return cache["keys"]
 
 _scoped_key_hashes._cache = {"mtime": None, "keys": {}}  # type: ignore[attr-defined]
+
+_VALID_KEY_SCOPES = {"rest", "mcp"}
+_FULL_KEY_SCOPES = {"rest", "mcp"}
+
+
+def _url_key_state(candidate: str) -> str:
+    """Classify a /mcp/<key> credential.
+
+    "master"        — the session token, refused in URLs by design (SC-06)
+    "unknown"       — not present in .apikeys
+    "expired"       — past its expiry
+    "no-mcp-scope"  — valid key that lacks the "mcp" scope (VULN-023)
+    "ok"            — usable scoped key
+    """
+    import hashlib as _hashlib
+    import secrets as _secrets
+    import time as _time
+    try:
+        expected = _token()
+    except RuntimeError:
+        expected = ""
+    if expected and _secrets.compare_digest(candidate, expected):
+        return "master"
+    kh = _hashlib.sha256(candidate.encode()).hexdigest()
+    entry = _scoped_key_hashes().get(kh)
+    if entry is None:
+        return "unknown"
+    exp = entry.get("exp")
+    scopes = entry.get("scopes") or set(_FULL_KEY_SCOPES)
+    if exp is not None and _time.time() >= exp:
+        return "expired"
+    if "mcp" not in scopes:
+        return "no-mcp-scope"
+    return "ok"
+
+
+def _header_token_valid(supplied) -> bool:
+    """Constant-time compare of X-Auth-Token against master (VULN-014)."""
+    import secrets as _secrets
+    if not supplied:
+        return False
+    try:
+        expected = _token()
+    except RuntimeError:
+        return False
+    return _secrets.compare_digest(supplied.encode("utf-8", "ignore"),
+                                   expected.encode())
 
 
 def _api(method: str, path: str, body: dict | None = None,
@@ -427,28 +484,29 @@ def _run_http(port: int) -> None:
         # API key embedded in the URL path. The master session token is
         # explicitly REJECTED in the URL — scope the blast radius instead:
         # short-lived key + revoke when done (POST /api/keys).
-        import hashlib as _hashlib
         import re as _re
-        import time as _time
         m = _re.fullmatch(r"/mcp/([0-9a-fA-F]{48})", path)
         if m:
-            candidate = m.group(1).lower()
-            if candidate == _expected():
+            state = _url_key_state(m.group(1).lower())
+            if state == "master":
                 await _send_json(send, 403,
                                  {"ok": False,
                                   "error": "refusing the master session token "
                                            "in a URL; create a scoped key via "
                                            "POST /api/keys instead"})
                 return
-            kh = _hashlib.sha256(candidate.encode()).hexdigest()
-            exp = _scoped_key_hashes().get(kh)
-            if exp is None:
+            if state == "unknown":
                 await _send_json(send, 401,
                                  {"ok": False, "error": "unknown scoped key"})
                 return
-            if _time.time() >= exp:
+            if state == "expired":
                 await _send_json(send, 403,
                                  {"ok": False, "error": "scoped key expired"})
+                return
+            if state == "no-mcp-scope":
+                await _send_json(send, 403,
+                                 {"ok": False,
+                                  "error": "key lacks the 'mcp' scope"})
                 return
             scope = dict(scope)
             scope["path"] = "/mcp"
@@ -462,8 +520,7 @@ def _run_http(port: int) -> None:
         # browser history and shared URLs, and this token grants full desktop
         # control. Clients that cannot send custom headers must use a wrapper
         # (e.g. a local stdio mcp_server.py proxying to this endpoint).
-        supplied = headers.get("x-auth-token")
-        if supplied != _expected():
+        if not _header_token_valid(headers.get("x-auth-token")):
             await _send_json(send, 401,
                              {"ok": False,
                               "error": "unauthorized: missing or invalid "

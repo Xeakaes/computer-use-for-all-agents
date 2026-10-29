@@ -15,6 +15,9 @@ Coverage:
  11. Scoped API keys (SC-06): authenticate, expire, revoke
  12. MCP scoped-key URL (optional): /mcp/<key> works, master token refused
  13. App launch input validation + window-wait timeout (OPERATION_TIMEOUT)
+ 14. Forbidden-key variants (VULN-004): Super_L / Alt_L / raw VK digits
+ 15. Launch policy (VULN-007): interpreter/executor app names refused
+ 16. Key scopes + admin endpoints (VULN-023) and CSP header (VULN-001)
 """
 
 import json
@@ -223,6 +226,24 @@ if windows:
     err = err.get("message", "") if isinstance(err, dict) else err
     check("Win key via window/post -> 403", s == 403, f"{s} {str(err)[:50]}")
 
+# VULN-004: the friendly-name tests above are not enough — backends also
+# accept X11 keysyms and raw VK codes. Every dialect must hit the policy.
+s, r = post("/api/key", {"action": "press", "key": "Super_L"})
+check("Super_L (keysym) -> 403", s == 403, str(s))
+s, r = post("/api/key", {"action": "hotkey", "keys": ["Alt_L", "F4"]})
+check("Alt_L+F4 (keysym) -> 403", s == 403, str(s))
+s, r = post("/api/key", {"action": "hotkey", "keys": ["Super_L", "l"]})
+check("Super_L+l (keysym) -> 403", s == 403, str(s))
+if sys.platform == "win32":
+    # Raw VK digit bypasses are Windows-only (PostMessage/pyautogui path):
+    # on X11 a digit is a keysym ("91" is "["), not VK_LWIN.
+    s, r = post("/api/key", {"action": "press", "key": "91"})
+    check("Raw VK 91 (VK_LWIN) -> 403", s == 403, str(s))
+    s, r = post("/api/key", {"action": "press", "key": "46"})
+    check("Raw VK 46 (VK_DELETE) -> 403", s == 403, str(s))
+    s, r = post("/api/key", {"action": "hotkey", "keys": ["18", "115"]})
+    check("Raw VK 18+115 (Alt+F4) -> 403", s == 403, str(s))
+
 
 # --- 10) Resource limits (SC-05) ---
 
@@ -333,13 +354,64 @@ s, r = post("/api/launch", {"file": "/nonexistent/file-918273.pdf"})
 check("Missing file -> 400", s == 400, str(s))
 launch_app = "python3" if shutil.which("python3") else "python"
 s, r = post("/api/launch", {"app": launch_app, "args": ["-c", "pass"]})
-check("Launch interpreter -> ok + pid", s == 200 and r.get("ok")
-      and isinstance(r.get("pid"), int) and r["pid"] > 0, str(s))
+check("Interpreter launch refused (VULN-007) -> 400", s == 400, str(s))
+s, r = post("/api/launch", {"app": "env"})
+check("Executor env refused -> 400", s == 400, str(s))
+s, r = post("/api/launch", {"app": "bash"})
+check("Executor bash refused -> 400", s == 400, str(s))
 t0 = time.time()
 s, r = get_raw("/api/window/wait?title=__no_such_window_918273__&timeout=1")
 dt = time.time() - t0
 check("Wait timeout -> 408", s == 408, str(s))
 check("Wait honors timeout", dt < 6, f"{dt:.1f}s")
+
+
+# --- 14/15/16) Pentest remediation: scopes, admin, CSP (VULN-001/023) ---
+
+print("\n== Key Scopes, Admin Endpoints, CSP (VULN-001/023) ==")
+s, r = post("/api/keys", {"action": "create", "name": "sec-scope-mcp",
+                          "expires_in_hours": 1, "scopes": ["mcp"]})
+mk = r.get("key", "")
+req = urllib.request.Request(BASE + "/api/info", headers={"X-Auth-Token": mk})
+try:
+    urllib.request.urlopen(req, timeout=5)
+    check("mcp-scoped key refused on REST", False, "no error raised")
+except urllib.error.HTTPError as e:
+    check("mcp-scoped key refused on REST -> 403", e.code == 403, str(e.code))
+
+s, r = post("/api/keys", {"action": "create", "name": "sec-scope-rest",
+                          "expires_in_hours": 1, "scopes": ["rest"]})
+rk = r.get("key", "")
+req = urllib.request.Request(BASE + "/api/info", headers={"X-Auth-Token": rk})
+try:
+    urllib.request.urlopen(req, timeout=5)
+    check("rest-scoped key authenticates REST", True)
+except urllib.error.HTTPError as e:
+    check("rest-scoped key authenticates REST", False, str(e.code))
+req = urllib.request.Request(BASE + "/api/session",
+                             headers={"X-Auth-Token": rk})
+try:
+    urllib.request.urlopen(req, timeout=5)
+    check("scoped key refused on /api/session", False, "no error raised")
+except urllib.error.HTTPError as e:
+    check("scoped key refused on /api/session -> 403", e.code == 403,
+          str(e.code))
+req = urllib.request.Request(BASE + "/api/keys", headers={"X-Auth-Token": rk})
+req.get_method = lambda: "POST"
+try:
+    urllib.request.urlopen(req, timeout=5)
+    check("scoped key refused on /api/keys", False, "no error raised")
+except urllib.error.HTTPError as e:
+    check("scoped key refused on /api/keys -> 403", e.code == 403, str(e.code))
+
+post("/api/keys", {"action": "revoke", "name": "sec-scope-mcp"})
+post("/api/keys", {"action": "revoke", "name": "sec-scope-rest"})
+
+req = urllib.request.Request(BASE + "/")
+resp = urllib.request.urlopen(req, timeout=5)
+csp = resp.headers.get("Content-Security-Policy", "")
+check("CSP header on / (script-src-attr none)",
+      "script-src-attr 'none'" in csp, csp[:60])
 
 
 # --- Summary ---

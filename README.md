@@ -445,8 +445,11 @@ GET /token
 → {"ok": true, "token": "abc123..."}
 ```
 
-> The `/token` endpoint is safe: Same-Origin Policy prevents foreign pages
-> from reading it.
+> The `/token` endpoint answers only loopback callers on a loopback bind:
+> the check uses the accepted socket's peer address (a LAN client cannot
+> spoof it), the `Host` header guards against DNS rebinding, and the
+> response is never cached. When the server is bound to `0.0.0.0` or is
+> reached from a non-loopback peer, `/token` returns **403**.
 
 ---
 
@@ -696,6 +699,11 @@ Spawn an application, open a URL, or open a local file. Exactly one of
 `app` | `url` | `file`. Never runs through a shell: `app` is a plain command
 name resolved on `PATH` (`[A-Za-z0-9._+-]+`), `url`/`file` go through
 `xdg-open`.
+
+> **Launch policy:** interpreter and executor names (`python*`, `node`,
+> `sh`/`bash`/`cmd`/`powershell`, `env`, `xargs`, `sudo`, `curl`, …) are
+> refused with **400** — `/api/launch` is for GUI applications, not a
+> remote code-execution endpoint.
 
 | Field | Type | Description |
 |---|---|---|
@@ -1024,7 +1032,7 @@ time-limited credential — and embed it in the URL path:
 # Create a 24-hour scoped key (requires the server to be running)
 curl -X POST http://127.0.0.1:8745/api/keys -H "X-Auth-Token: $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"action":"create","name":"spark","expires_in_hours":24}'
+  -d '{"action":"create","name":"spark","expires_in_hours":24,"scopes":["mcp"]}'
 
 # Connector endpoint becomes:
 #   https://<tunnel-url>/mcp/<scoped-key>
@@ -1033,27 +1041,35 @@ curl -X POST http://127.0.0.1:8745/api/keys -H "X-Auth-Token: $TOKEN" \
 Design guarantees (SC-06):
 - The **master session token is refused in URLs** (403) — only scoped keys
   may travel there
+- Keys carry **scopes** (`rest`, `mcp`): a key minted with
+  `{"scopes":["mcp"]}` cannot call the REST API at all, and any scoped key
+  is refused on **admin endpoints** (`/api/keys`, `/api/session*`) — those
+  accept the master token only
 - Scoped keys **expire automatically**; expired keys authenticate nothing
 - Scoped keys are **revocable by name** at any moment via `POST /api/keys`
   (`{"action":"revoke","name":"spark"}`) — revocation takes effect
   immediately on every endpoint
-- The `.apikeys` file stores only SHA-256 hashes, never raw keys
+- The `.apikeys` file stores only SHA-256 hashes, never raw keys, and is
+  written with `0600` permissions
 
 > ⚠️ A tunnel exposes PC control to the internet. Keep the token secret,
 > prefer short-lived tunnels and scoped keys for headerless connectors,
 > and stop the server when not in use.
 
-### One-Command Startup (launcher + auto-tunnel)
+### One-Command Startup (launcher, tunnel opt-in)
 
-`start-server.bat` automates the whole cloud setup and prints everything
-your cloud agent needs, ready to paste:
+`start-server.bat` automates the whole setup and prints a paste-ready
+**scoped key** for your cloud agent:
 
-1. Downloads `cloudflared.exe` if missing (portable, no admin required)
+1. Downloads `cloudflared.exe` **from a pinned release** and verifies its
+   SHA-256 against Cloudflare's published checksum (no mutable `latest`
+   URL, no unverified binary)
 2. Stops leftover instances from a previous run
 3. Starts the REST server (port 8745) and the MCP HTTP server (port 8751)
 4. Waits until both are healthy (`/token` and `/health` probes)
-5. Starts a cloudflared quick tunnel, extracts its public URL from
-   `tunnel.log`, and prints the summary:
+5. Starts the quick tunnel **only when you opt in** with
+   `start-server.bat --tunnel`, extracts its public URL from `tunnel.log`,
+   and prints the summary:
 
 ```
  ============================================================
@@ -1067,11 +1083,14 @@ your cloud agent needs, ready to paste:
   PASTE INTO YOUR CLOUD AGENT  (MCP connector settings)
   ------------------------------------------------------------
   Endpoint : https://<random>.trycloudflare.com/mcp
-  Header   : X-Auth-Token: <token>
-  URL form : https://<random>.trycloudflare.com/mcp?token=<token>
-             (only if the connector cannot send headers)
+  Header   : X-Auth-Token: <24-hour scoped key "launcher">
+             (the master token is NOT shown; revoke anytime)
   ------------------------------------------------------------
 ```
+
+Without `--tunnel` nothing is exposed to the internet — the launcher is a
+local-only startup. The pasted credential is a 24-hour **mcp-scoped** key
+(minted locally, revocable via `POST /api/keys {"action":"revoke",...}`).
 
 `stop-server.bat` stops all three (REST, MCP, tunnel) in one go.
 
@@ -1399,7 +1418,7 @@ screen-control/
 ├── index.html           # Bundled web UI (live view + control panels)
 ├── docs/images/         # README assets (demo GIF captured by the API itself)
 ├── requirements.txt     # Python dependencies
-├── start-server.bat     # One command: REST + MCP + cloud tunnel (Windows)
+├── start-server.bat     # One command: REST + MCP (+ tunnel with --tunnel) (Windows)
 ├── stop-server.bat      # Stop all three processes
 ├── install-linux.sh     # One-command Linux setup (apt, venv, uinput check)
 ├── start-server.sh      # Linux launcher (.venv/bin/python server.py)

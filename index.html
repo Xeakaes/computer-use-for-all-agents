@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; script-src-attr 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'">
 <title>Screen Control</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1015,11 +1016,12 @@ function setBanner() {
   const b = $("mode-banner");
   if (target) {
     b.classList.add("active");
-    b.innerHTML = `🎯 <b>Hedef mod aktif:</b> hwnd ${target}` +
+    b.textContent = `🎯 Hedef mod aktif: hwnd ${target}` +
       (typeChild ? ` · yazım kontrolü: ${typeChild}` : "") +
-      ` — girdiler bu pencereye yönlendirilir.`;
+      " — girdiler bu pencereye yönlendirilir.";
   } else {
     b.classList.remove("active");
+    b.textContent = "";
   }
 }
 
@@ -1065,7 +1067,9 @@ async function refreshWindows() {
     j.windows.forEach(w => {
       const o = document.createElement("option");
       o.value = w.hwnd;
-      o.textContent = `${w.focused ? "●" : "○"} ${w.title.slice(0, 35)} [${w.process}]`;
+      // textContent — untrusted title/process never touch a parser (VULN-001)
+      o.textContent = (w.focused ? "●" : "○") + " " +
+        String(w.title).slice(0, 35) + " [" + w.process + "]";
       sel.appendChild(o);
     });
     sel.value = target ? String(target) : (cur || "");
@@ -1074,18 +1078,37 @@ async function refreshWindows() {
     j.windows.slice(0, 30).forEach(w => {
       const row = document.createElement("div");
       row.className = "window-item" + (w.focused ? " focused" : "");
-      
-      row.innerHTML = `
-        <div class="window-icon"></div>
-        <div class="window-info">
-          <div class="window-title">${w.title.slice(0, 30)}</div>
-          <div class="window-process">${w.process}</div>
-        </div>
-        <div class="window-actions">
-          <button class="btn btn-ghost btn-xs" data-action="focus" data-hwnd="${w.hwnd}" title="Odakla">🎯</button>
-          <button class="btn btn-ghost btn-xs" data-action="close" data-hwnd="${w.hwnd}" data-title="${w.title.slice(0, 12)}" title="Kapat">✕</button>
-        </div>
-      `;
+      // VULN-001: window titles/process names are attacker-influenced data
+      // (any app on the desktop controls them). Build the row with DOM APIs
+      // and textContent — never innerHTML interpolation.
+      const icon = document.createElement("div");
+      icon.className = "window-icon";
+      const info = document.createElement("div");
+      info.className = "window-info";
+      const titleEl = document.createElement("div");
+      titleEl.className = "window-title";
+      titleEl.textContent = String(w.title).slice(0, 30);
+      const procEl = document.createElement("div");
+      procEl.className = "window-process";
+      procEl.textContent = String(w.process);
+      info.append(titleEl, procEl);
+      const actions = document.createElement("div");
+      actions.className = "window-actions";
+      const focusBtn = document.createElement("button");
+      focusBtn.className = "btn btn-ghost btn-xs";
+      focusBtn.dataset.action = "focus";
+      focusBtn.dataset.hwnd = w.hwnd;
+      focusBtn.title = "Odakla";
+      focusBtn.textContent = "🎯";
+      const closeBtn = document.createElement("button");
+      closeBtn.className = "btn btn-ghost btn-xs";
+      closeBtn.dataset.action = "close";
+      closeBtn.dataset.hwnd = w.hwnd;
+      closeBtn.dataset.title = String(w.title).slice(0, 12);
+      closeBtn.title = "Kapat";
+      closeBtn.textContent = "✕";
+      actions.append(focusBtn, closeBtn);
+      row.append(icon, info, actions);
       list.appendChild(row);
     });
     
@@ -1106,9 +1129,19 @@ async function refreshWindows() {
       });
     });
     
-    if (!j.windows.length) list.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Pencere bulunamadı</div>';
+    if (!j.windows.length) {
+      const empty = document.createElement("div");
+      empty.style.color = "var(--text-muted)";
+      empty.style.fontSize = "12px";
+      empty.textContent = "Pencere bulunamadı";
+      list.appendChild(empty);
+    }
   } catch (e) {
-    list.innerHTML = '<div style="color:var(--accent-red);font-size:12px;">Hata: ' + e.message + '</div>';
+    const err = document.createElement("div");
+    err.style.color = "var(--accent-red)";
+    err.style.fontSize = "12px";
+    err.textContent = "Hata: " + e.message;
+    list.appendChild(err);
   }
 }
 

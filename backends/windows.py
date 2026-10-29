@@ -378,18 +378,33 @@ _held_buttons: set[str] = set()
 
 # Forbidden-key policy now lives in backends.forbidden (shared by all backends).
 from backends.forbidden import (FORBIDDEN_KEYS, FORBIDDEN_HOTKEYS,   # noqa: F401
-                                assert_forbidden as _assert_allowed)
+                                assert_forbidden as _assert_allowed,
+                                canonical_policy_keys)
+
+
+def _vk_lookup(name: str):
+    """Resolve a raw digit name to its VK code (None when not a digit)."""
+    return int(name) if str(name).strip().isdigit() else None
+
+
+def _policy_check(keys) -> None:
+    """SC-02 with raw-VK digit resolution folded in (VULN-004).
+
+    ["91"] is VK_LWIN (the Win key), ["18","115"] is Alt+F4 — the friendly-
+    name policy used to miss both because it only saw digit strings.
+    """
+    _assert_allowed(canonical_policy_keys(keys, _vk_lookup))
 
 
 def key_press(key: str) -> None:
     """Press and release a single key."""
-    _assert_allowed([key])
+    _policy_check([key])
     pyautogui.press(key)
 
 
 def key_down(key: str) -> None:
     """Hold a key down (tracked for release_all / watchdog)."""
-    _assert_allowed([key])
+    _policy_check([key])
     pyautogui.keyDown(key)
     with _held_lock:
         _held_keys.add(key.lower())
@@ -397,7 +412,7 @@ def key_down(key: str) -> None:
 
 def key_up(key: str) -> None:
     """Release a held key."""
-    _assert_allowed([key])
+    _policy_check([key])
     pyautogui.keyUp(key)
     with _held_lock:
         _held_keys.discard(key.lower())
@@ -405,7 +420,7 @@ def key_up(key: str) -> None:
 
 def key_hotkey(*keys: str) -> None:
     """Press a key combination (e.g. key_hotkey('ctrl', 'c'))."""
-    _assert_allowed(list(keys))
+    _policy_check(list(keys))
     pyautogui.hotkey(*keys)
 
 
@@ -998,7 +1013,7 @@ def window_key(hwnd: int, key: str) -> dict:
     path too — an agent must not reach Alt+F4 etc. through PostMessage when
     the direct route blocks it.
     """
-    _assert_allowed([key])
+    _policy_check([key])
     vk = vk_from_name(key)
     scan = _scan_code(vk)
     _user32.PostMessageW(hwnd, WM_KEYDOWN, vk, (scan << 16) | 1)
@@ -1013,7 +1028,7 @@ def window_hotkey(hwnd: int, keys: list) -> dict:
     Safety parity (SC-02): forbidden hotkeys are blocked on the background
     path exactly like on the focused SendInput path.
     """
-    _assert_allowed(list(keys))
+    _policy_check(list(keys))
     vks = [vk_from_name(k) for k in keys]
     for vk in vks:
         _user32.PostMessageW(hwnd, WM_KEYDOWN, vk, (_scan_code(vk) << 16) | 1)
@@ -1215,7 +1230,7 @@ class WindowsBackend(PlatformBackend):
     mouse_up = staticmethod(mouse_up)
 
     # keyboard
-    assert_allowed = staticmethod(_assert_allowed)
+    assert_allowed = staticmethod(_policy_check)
     key_press = staticmethod(key_press)
     key_down = staticmethod(key_down)
     key_up = staticmethod(key_up)

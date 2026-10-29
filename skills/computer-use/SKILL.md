@@ -78,6 +78,7 @@ reference is not enough).
   `ctrl+alt+del` and friends. Close windows via
   `POST /api/window {"action":"close"}` with `expect_title`.
 - `POST /api/launch` never runs a shell: `app` is a plain `PATH` command
+  (interpreter/executor names like `python`/`sh`/`cmd`/`env` are refused 400)
   name (resolved with PATHEXT on Windows — `"notepad"` works; on Linux
   try `firefox`, `gedit`, …), `url`/`file` go through `xdg-open`/`open`.
   `expect_title` matches the window title with the **same case-insensitive
